@@ -16,9 +16,9 @@ type Config struct {
 func parseFlags() *Config {
 	cfg := &Config{}
 
-	flag.StringVar(&cfg.Token, "token", os.Getenv("SSHGUARD_TELEGRAM_TOKEN"), "Telegram bot token (env: SSHGUARD_TELEGRAM_TOKEN)")
-	flag.StringVar(&cfg.ChatID, "chat-id", os.Getenv("SSHGUARD_TELEGRAM_CHAT_ID"), "Telegram chat ID (env: SSHGUARD_TELEGRAM_CHAT_ID)")
-	flag.StringVar(&cfg.LogPath, "log", "", "SSH auth log path (auto-detect if empty; env: SSHGUARD_LOG_PATH)")
+	flag.StringVar(&cfg.Token, "token", os.Getenv("SSHGUARD_TELEGRAM_TOKEN"), "Telegram Bot Token (环境变量: SSHGUARD_TELEGRAM_TOKEN)")
+	flag.StringVar(&cfg.ChatID, "chat-id", os.Getenv("SSHGUARD_TELEGRAM_CHAT_ID"), "Telegram Chat ID (环境变量: SSHGUARD_TELEGRAM_CHAT_ID)")
+	flag.StringVar(&cfg.LogPath, "log", "", "SSH 日志路径 (留空则自动检测; 环境变量: SSHGUARD_LOG_PATH)")
 	flag.Parse()
 
 	if cfg.LogPath == "" {
@@ -30,10 +30,10 @@ func parseFlags() *Config {
 	}
 
 	if cfg.Token == "" {
-		exitErr("telegram bot token is required (-token or SSHGUARD_TELEGRAM_TOKEN env)")
+		exitErr("缺少 Telegram Bot Token (-token 或环境变量 SSHGUARD_TELEGRAM_TOKEN)")
 	}
 	if cfg.ChatID == "" {
-		exitErr("telegram chat ID is required (-chat-id or SSHGUARD_TELEGRAM_CHAT_ID env)")
+		exitErr("缺少 Telegram Chat ID (-chat-id 或环境变量 SSHGUARD_TELEGRAM_CHAT_ID)")
 	}
 
 	return cfg
@@ -41,7 +41,7 @@ func parseFlags() *Config {
 
 func exitErr(msg string) {
 	fmt.Fprintln(os.Stderr, "sshguard:", msg)
-	fmt.Fprintln(os.Stderr, "usage: sshguard -token <bot_token> -chat-id <chat_id> [-log <path>]")
+	fmt.Fprintln(os.Stderr, "用法: sshguard -token <bot_token> -chat-id <chat_id> [-log <路径>]")
 	os.Exit(1)
 }
 

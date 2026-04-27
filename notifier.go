@@ -35,11 +35,11 @@ type telegramResponse struct {
 
 func notifyTelegram(token, chatID string, ev *SSHEvent) error {
 	text := fmt.Sprintf(
-		"<b>SSH Login</b> on <code>%s</code>\n\n"+
-			"User: <b>%s</b>\n"+
-			"From: <code>%s</code>\n"+
-			"Method: %s\n"+
-			"Time: %s",
+		"<b>SSH 登录</b> 于 <code>%s</code>\n\n"+
+			"用户: <b>%s</b>\n"+
+			"来源: <code>%s</code>\n"+
+			"认证方式: %s\n"+
+			"时间: %s",
 		escapeHTML(serverIdent),
 		escapeHTML(ev.User),
 		fmt.Sprintf("%s:%s", ev.SourceIP, ev.SourcePort),
@@ -53,25 +53,25 @@ func notifyTelegram(token, chatID string, ev *SSHEvent) error {
 		ParseMode: "HTML",
 	})
 	if err != nil {
-		return fmt.Errorf("marshal message: %w", err)
+		return fmt.Errorf("序列化消息失败: %w", err)
 	}
 
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
 	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("send request: %w", err)
+		return fmt.Errorf("发送请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var result telegramResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("decode response: %w", err)
+		return fmt.Errorf("解析响应失败: %w", err)
 	}
 	if !result.OK {
-		return fmt.Errorf("telegram API error %d: %s", result.ErrorCode, result.Description)
+		return fmt.Errorf("Telegram API 错误 %d: %s", result.ErrorCode, result.Description)
 	}
 
-	log.Printf("notification sent: user=%s ip=%s", ev.User, ev.SourceIP)
+	log.Printf("通知已发送: 用户=%s IP=%s", ev.User, ev.SourceIP)
 	return nil
 }
 
@@ -134,12 +134,12 @@ func primaryIPv4() string {
 
 func notifyStatus(token, chatID, status string) error {
 	emoji := "🟢"
-	if status == "offline" {
+	if status == "离线" {
 		emoji = "🔴"
 	}
 
 	text := fmt.Sprintf(
-		"%s SSHHGuard <b>%s</b> on <code>%s</code>\nTime: %s",
+		"%s SSHHGuard <b>%s</b>\n服务器: <code>%s</code>\n时间: %s",
 		emoji,
 		status,
 		escapeHTML(serverIdent),
@@ -152,22 +152,22 @@ func notifyStatus(token, chatID, status string) error {
 		ParseMode: "HTML",
 	})
 	if err != nil {
-		return fmt.Errorf("marshal status message: %w", err)
+		return fmt.Errorf("序列化状态消息失败: %w", err)
 	}
 
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
 	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("send status request: %w", err)
+		return fmt.Errorf("发送状态请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var result telegramResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("decode status response: %w", err)
+		return fmt.Errorf("解析状态响应失败: %w", err)
 	}
 	if !result.OK {
-		return fmt.Errorf("telegram API error %d: %s", result.ErrorCode, result.Description)
+		return fmt.Errorf("Telegram API 错误 %d: %s", result.ErrorCode, result.Description)
 	}
 
 	return nil

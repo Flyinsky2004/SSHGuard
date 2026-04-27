@@ -22,7 +22,7 @@ var iso8601TsRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T`)
 
 func monitorLog(logPath string, events chan<- *SSHEvent) error {
 	if _, err := os.Stat(logPath); err != nil {
-		return fmt.Errorf("log file not found %s: %w", logPath, err)
+		return fmt.Errorf("日志文件未找到 %s: %w", logPath, err)
 	}
 
 	t, err := tail.TailFile(logPath, tail.Config{
@@ -32,13 +32,13 @@ func monitorLog(logPath string, events chan<- *SSHEvent) error {
 		Location:  &tail.SeekInfo{Offset: 0, Whence: os.SEEK_END},
 	})
 	if err != nil {
-		return fmt.Errorf("tail file %s: %w", logPath, err)
+		return fmt.Errorf("监听日志文件失败 %s: %w", logPath, err)
 	}
 
 	go func() {
 		for line := range t.Lines {
 			if line.Err != nil {
-				log.Printf("tail error: %v", line.Err)
+				log.Printf("日志读取错误: %v", line.Err)
 				continue
 			}
 			ev := parseLine(line.Text)
@@ -49,7 +49,7 @@ func monitorLog(logPath string, events chan<- *SSHEvent) error {
 		close(events)
 	}()
 
-	log.Printf("monitoring SSH log: %s", logPath)
+	log.Printf("正在监控 SSH 日志: %s", logPath)
 	return nil
 }
 
@@ -60,7 +60,7 @@ func parseLine(line string) *SSHEvent {
 	}
 	ts, err := parseTimestamp(matches[1])
 	if err != nil {
-		log.Printf("parse timestamp: %v (line: %s)", err, line)
+		log.Printf("解析时间戳失败: %v (日志行: %s)", err, line)
 		return nil
 	}
 	return &SSHEvent{
@@ -98,5 +98,5 @@ func parseTimestamp(s string) (time.Time, error) {
 			}
 		}
 	}
-	return time.Time{}, fmt.Errorf("unknown timestamp format: %s", s)
+	return time.Time{}, fmt.Errorf("未知的时间戳格式: %s", s)
 }
