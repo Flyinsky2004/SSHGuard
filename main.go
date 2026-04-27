@@ -10,14 +10,10 @@ import (
 func main() {
 	cfg := parseFlags()
 
-	var err error
-	aliases, err = newAliasStore(cfg.AliasFile)
-	if err != nil {
-		log.Fatalf("加载别名文件失败: %v", err)
+	// 设置服务器别名
+	if cfg.Alias != "" {
+		applyServerName(cfg.Alias)
 	}
-
-	// 启动机器人命令处理
-	startBot(cfg.Token, cfg.ChatID)
 
 	// 上线通知
 	if err := notifyStatus(cfg.Token, cfg.ChatID, "在线"); err != nil {

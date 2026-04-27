@@ -42,7 +42,7 @@ func notifyTelegram(token, chatID string, ev *SSHEvent) error {
 			"时间: %s",
 		escapeHTML(serverIdent),
 		escapeHTML(ev.User),
-		fmt.Sprintf("%s:%s", aliases.formatIP(ev.SourceIP), ev.SourcePort),
+		fmt.Sprintf("%s:%s", ev.SourceIP, ev.SourcePort),
 		ev.AuthMethod,
 		ev.Timestamp.Format("2006-01-02 15:04:05"),
 	)
@@ -76,24 +76,39 @@ func notifyTelegram(token, chatID string, ev *SSHEvent) error {
 }
 
 var serverIdent string
+var serverName string
 
 func init() {
-	hn, _ := os.Hostname()
+	buildServerIdent()
+}
 
+func buildServerIdent() {
+	hn, _ := os.Hostname()
 	ip := primaryIPv4()
+
+	label := hn
+	if serverName != "" {
+		label = serverName
+	}
+
 	if ip != "" {
-		if hn != "" && hn != "localhost" && hn != "localhost.localdomain" {
-			serverIdent = fmt.Sprintf("%s (%s)", hn, ip)
+		if label != "" && label != "localhost" && label != "localhost.localdomain" {
+			serverIdent = fmt.Sprintf("%s (%s)", label, ip)
 		} else {
 			serverIdent = ip
 		}
 	} else {
-		if hn != "" {
-			serverIdent = hn
+		if label != "" {
+			serverIdent = label
 		} else {
 			serverIdent = "unknown"
 		}
 	}
+}
+
+func applyServerName(name string) {
+	serverName = name
+	buildServerIdent()
 }
 
 // primaryIPv4 returns the first non-loopback IPv4 address.
