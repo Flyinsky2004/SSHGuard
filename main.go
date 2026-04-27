@@ -10,6 +10,11 @@ import (
 func main() {
 	cfg := parseFlags()
 
+	// 上线通知
+	if err := notifyStatus(cfg.Token, cfg.ChatID, "online"); err != nil {
+		log.Printf("online notification failed: %v", err)
+	}
+
 	events := make(chan *SSHEvent, 64)
 
 	if err := monitorLog(cfg.LogPath, events); err != nil {
@@ -24,6 +29,7 @@ func main() {
 		case ev, ok := <-events:
 			if !ok {
 				log.Println("monitor stopped, exiting")
+				notifyStatus(cfg.Token, cfg.ChatID, "offline")
 				return
 			}
 			if err := notifyTelegram(cfg.Token, cfg.ChatID, ev); err != nil {
@@ -31,6 +37,7 @@ func main() {
 			}
 		case sig := <-sigCh:
 			log.Printf("received signal %v, shutting down", sig)
+			notifyStatus(cfg.Token, cfg.ChatID, "offline")
 			return
 		}
 	}

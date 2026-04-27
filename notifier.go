@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -70,6 +71,57 @@ func notifyTelegram(token, chatID string, ev *SSHEvent) error {
 	}
 
 	log.Printf("notification sent: user=%s ip=%s", ev.User, ev.SourceIP)
+	return nil
+}
+
+var hostname string
+
+func init() {
+	h, err := os.Hostname()
+	if err != nil {
+		h = "unknown"
+	}
+	hostname = h
+}
+
+func notifyStatus(token, chatID, status string) error {
+	emoji := "🟢"
+	if status == "offline" {
+		emoji = "🔴"
+	}
+
+	text := fmt.Sprintf(
+		"%s SSHHGuard <b>%s</b> on <code>%s</code>\nTime: %s",
+		emoji,
+		status,
+		escapeHTML(hostname),
+		time.Now().Format("2006-01-02 15:04:05"),
+	)
+
+	body, err := json.Marshal(telegramMessage{
+		ChatID:    chatID,
+		Text:      text,
+		ParseMode: "HTML",
+	})
+	if err != nil {
+		return fmt.Errorf("marshal status message: %w", err)
+	}
+
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("send status request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result telegramResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("decode status response: %w", err)
+	}
+	if !result.OK {
+		return fmt.Errorf("telegram API error %d: %s", result.ErrorCode, result.Description)
+	}
+
 	return nil
 }
 
