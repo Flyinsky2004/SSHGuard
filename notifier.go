@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -39,7 +40,7 @@ func notifyTelegram(token, chatID string, ev *SSHEvent) error {
 			"From: <code>%s</code>\n"+
 			"Method: %s\n"+
 			"Time: %s",
-		escapeHTML(ev.Hostname),
+		escapeHTML(serverIdent),
 		escapeHTML(ev.User),
 		fmt.Sprintf("%s:%s", ev.SourceIP, ev.SourcePort),
 		ev.AuthMethod,
@@ -74,14 +75,61 @@ func notifyTelegram(token, chatID string, ev *SSHEvent) error {
 	return nil
 }
 
-var hostname string
+var serverIdent string
 
 func init() {
-	h, err := os.Hostname()
-	if err != nil {
-		h = "unknown"
+	hn, _ := os.Hostname()
+
+	ip := primaryIPv4()
+	if ip != "" {
+		if hn != "" && hn != "localhost" && hn != "localhost.localdomain" {
+			serverIdent = fmt.Sprintf("%s (%s)", hn, ip)
+		} else {
+			serverIdent = ip
+		}
+	} else {
+		if hn != "" {
+			serverIdent = hn
+		} else {
+			serverIdent = "unknown"
+		}
 	}
-	hostname = h
+}
+
+// primaryIPv4 returns the first non-loopback IPv4 address.
+func primaryIPv4() string {
+	// Prefer the outbound IP used to reach the internet.
+	conn, err := net.Dial("udp", "8.8.8.8:53")
+	if err == nil {
+		addr := conn.LocalAddr().(*net.UDPAddr)
+		conn.Close()
+		if ip := addr.IP.To4(); ip != nil && !ip.IsLoopback() {
+			return ip.String()
+		}
+	}
+
+	// Fallback: scan network interfaces.
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok {
+				if ip := ipnet.IP.To4(); ip != nil && !ip.IsLoopback() {
+					return ip.String()
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func notifyStatus(token, chatID, status string) error {
@@ -94,7 +142,7 @@ func notifyStatus(token, chatID, status string) error {
 		"%s SSHHGuard <b>%s</b> on <code>%s</code>\nTime: %s",
 		emoji,
 		status,
-		escapeHTML(hostname),
+		escapeHTML(serverIdent),
 		time.Now().Format("2006-01-02 15:04:05"),
 	)
 
