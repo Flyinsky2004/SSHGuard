@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ============================================================
-# SSHHGuard — Interactive Installer
+# SSHHGuard — 交互式安装脚本
 # ============================================================
 
 RED='\033[0;31m'
@@ -17,25 +17,23 @@ BINARY_NAME="sshguard"
 ENV_FILE="/etc/sshguard/env"
 SERVICE_FILE="/etc/systemd/system/sshguard.service"
 
-# Default artifact — latest CI build on main branch
-ARTIFACT_RUN_ID="24980111221"
-ARTIFACT_ID="6654616310"
-REPO="Flyinsky2004/SSHGuard"
+# 下载地址 — GitHub Releases 中的预编译二进制
+DOWNLOAD_URL="https://github.com/Flyinsky2004/SSHGuard/releases/download/main/sshguard"
 
 # -----------------------------------------------------------
-# Helpers
+# 工具函数
 # -----------------------------------------------------------
 banner() {
     echo -e "${CYAN}${BOLD}"
     echo "  ╔══════════════════════════════════╗"
-    echo "  ║        SSHHGuard Installer       ║"
+    echo "  ║        SSHHGuard 安装程序        ║"
     echo "  ╚══════════════════════════════════╝"
     echo -e "${NC}"
 }
 
 info()    { echo -e "${GREEN}[+]${NC} $*"; }
 warn()    { echo -e "${YELLOW}[!]${NC} $*"; }
-error()   { echo -e "${RED}[x]${NC} $*"; }
+error()   { echo -e "${RED}[✗]${NC} $*"; }
 prompt()  { echo -ne "${BOLD}[?]${NC} $* "; }
 
 die() {
@@ -45,132 +43,62 @@ die() {
 
 require_root() {
     if [[ $EUID -ne 0 ]]; then
-        die "This script must be run as root. Use: sudo bash install.sh"
+        die "请使用 root 权限运行此脚本：sudo bash install.sh"
     fi
 }
 
 # -----------------------------------------------------------
-# Dependency checks
+# 检查依赖
 # -----------------------------------------------------------
 check_deps() {
-    info "Checking dependencies..."
+    info "检查依赖..."
 
     local missing=()
 
     command -v curl >/dev/null 2>&1 || missing+=("curl")
-    command -v unzip >/dev/null 2>&1 || missing+=("unzip")
-    command -v tar  >/dev/null 2>&1 || missing+=("tar")
 
     if [[ ${#missing[@]} -gt 0 ]]; then
-        warn "Missing: ${missing[*]}"
-        prompt "Install them now? (apt-get install ${missing[*]}) [Y/n]"
+        warn "缺少依赖：${missing[*]}"
+        prompt "是否现在安装？（apt-get install ${missing[*]}）[Y/n]"
         read -r ans
         if [[ "${ans:-y}" =~ ^[Yy]$ ]]; then
             apt-get update -qq && apt-get install -y "${missing[@]}"
         else
-            die "Cannot continue without: ${missing[*]}"
+            die "缺少依赖，无法继续：${missing[*]}"
         fi
     fi
 
-    # Check for gh CLI (preferred) or prompt for token later
-    if command -v gh >/dev/null 2>&1; then
-        if gh auth status >/dev/null 2>&1; then
-            info "GitHub CLI (gh) is authenticated — will use it to download artifacts."
-            DOWNLOAD_METHOD="gh"
-        else
-            info "GitHub CLI found but not logged in. Run 'gh auth login' or use a PAT."
-            DOWNLOAD_METHOD="curl"
-        fi
-    else
-        DOWNLOAD_METHOD="curl"
-    fi
+    info "依赖检查通过"
 }
 
 # -----------------------------------------------------------
-# Download artifact
+# 下载二进制
 # -----------------------------------------------------------
-download_artifact() {
-    info "Downloading SSHHGuard binary..."
+download_binary() {
+    info "正在下载 SSHHGuard 二进制文件..."
+    info "下载地址：$DOWNLOAD_URL"
 
     mkdir -p "$INSTALL_DIR"
 
-    local archive="$INSTALL_DIR/sshguard-artifact.zip"
+    curl -fsSL --progress-bar -o "$INSTALL_DIR/$BINARY_NAME" "$DOWNLOAD_URL" \
+        || die "下载失败，请检查网络连接和下载地址。"
 
-    if [[ "$DOWNLOAD_METHOD" == "gh" ]]; then
-        info "Using gh CLI to download artifact (run ID: $ARTIFACT_RUN_ID)..."
-        cd "$INSTALL_DIR"
-        gh run download "$ARTIFACT_RUN_ID" \
-            --repo "$REPO" \
-            --dir "$INSTALL_DIR" \
-            || die "Download failed. Check that the run exists and gh is authenticated."
-        # gh run download extracts the zip; the artifact name is sshguard-linux-amd64
-        # It creates a subdirectory named after the artifact, or extracts directly.
-        # Handle both cases.
-        if [[ -d "$INSTALL_DIR/sshguard-linux-amd64" ]]; then
-            mv "$INSTALL_DIR/sshguard-linux-amd64/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME" 2>/dev/null || true
-            rm -rf "$INSTALL_DIR/sshguard-linux-amd64"
-        fi
-    else
-        # Fallback: download via API with a PAT
-        warn "GitHub CLI not available or not authenticated."
-        echo ""
-        echo -e "  ${BOLD}Option A${NC}: Install GitHub CLI and authenticate:"
-        echo "    sudo apt install gh && gh auth login"
-        echo ""
-        echo -e "  ${BOLD}Option B${NC}: Provide a GitHub Personal Access Token (PAT)"
-        echo "    Create one at: https://github.com/settings/tokens"
-        echo "    Required scopes: none (public repo only)"
-        echo ""
-
-        prompt "Enter GitHub PAT (or press Enter to cancel):"
-        read -rs token
-        echo ""
-
-        if [[ -z "$token" ]]; then
-            die "No token provided. Aborting."
-        fi
-
-        info "Downloading via API..."
-        curl -fsSL \
-            -H "Authorization: Bearer $token" \
-            -H "Accept: application/vnd.github+json" \
-            -o "$archive" \
-            "https://api.github.com/repos/$REPO/actions/artifacts/$ARTIFACT_ID/zip" \
-            || die "Download failed. Check your token and network."
-
-        # Extract
-        cd "$INSTALL_DIR"
-        unzip -o "$archive" -d "$INSTALL_DIR" >/dev/null
-        rm -f "$archive"
-
-        # The zip from GitHub API contains a flat file named sshguard
-        if [[ ! -f "$INSTALL_DIR/$BINARY_NAME" ]]; then
-            # Maybe it's in a subdirectory
-            local found
-            found=$(find "$INSTALL_DIR" -name "$BINARY_NAME" -type f 2>/dev/null | head -1)
-            if [[ -n "$found" && "$found" != "$INSTALL_DIR/$BINARY_NAME" ]]; then
-                mv "$found" "$INSTALL_DIR/$BINARY_NAME"
-            fi
-        fi
-    fi
-
-    # Verify binary exists
-    if [[ ! -f "$INSTALL_DIR/$BINARY_NAME" ]]; then
-        die "Binary not found after extraction. Check archive contents."
+    # 校验有效性
+    if [[ ! -s "$INSTALL_DIR/$BINARY_NAME" ]]; then
+        die "下载的文件为空，请稍后重试。"
     fi
 
     chmod +x "$INSTALL_DIR/$BINARY_NAME"
-    info "Binary installed to $INSTALL_DIR/$BINARY_NAME"
-    info "Version: $("$INSTALL_DIR/$BINARY_NAME" -help 2>&1 | head -1 || echo 'unknown')"
+    info "二进制文件已安装至 $INSTALL_DIR/$BINARY_NAME"
 }
 
 # -----------------------------------------------------------
-# Interactive configuration
+# 交互式配置
 # -----------------------------------------------------------
 configure() {
     echo ""
-    echo -e "${CYAN}${BOLD}  ─── Configuration ───${NC}"
-    echo -e "  Press Enter to accept defaults (shown in brackets)."
+    echo -e "${CYAN}${BOLD}  ─── 配置参数 ───${NC}"
+    echo -e "  按 Enter 使用方括号中的默认值。"
     echo ""
 
     # --- Telegram Bot Token ---
@@ -179,8 +107,8 @@ configure() {
         read -r TELEGRAM_TOKEN
 
         if [[ -z "$TELEGRAM_TOKEN" ]]; then
-            warn "Telegram Bot Token is required."
-            echo "  Get one from @BotFather on Telegram: https://t.me/BotFather"
+            warn "Telegram Bot Token 为必填项。"
+            echo "  请在 Telegram 上向 @BotFather 获取：https://t.me/BotFather"
             continue
         fi
         break
@@ -192,78 +120,78 @@ configure() {
         read -r TELEGRAM_CHAT_ID
 
         if [[ -z "$TELEGRAM_CHAT_ID" ]]; then
-            warn "Telegram Chat ID is required."
-            echo "  Send /start to your bot, then visit:"
+            warn "Telegram Chat ID 为必填项。"
+            echo "  向你的 Bot 发送 /start，然后访问以下地址查看 chat id："
             echo "  https://api.telegram.org/bot<TOKEN>/getUpdates"
-            echo "  Look for 'chat':{'id': ...} in the JSON response."
+            echo "  在返回的 JSON 中找到 'chat':{'id': ...}"
             continue
         fi
         break
     done
 
-    # --- Log path ---
+    # --- 日志路径 ---
     echo ""
-    echo "  SSH auth log location (auto-detected if left blank):"
+    echo "  SSH 认证日志路径（留空则自动检测）："
     if [[ -f /var/log/auth.log ]]; then
-        echo -e "    ${GREEN}Found:${NC} /var/log/auth.log (Debian/Ubuntu)"
+        echo -e "    ${GREEN}检测到：${NC} /var/log/auth.log（Debian/Ubuntu）"
         DETECTED_LOG="/var/log/auth.log"
     elif [[ -f /var/log/secure ]]; then
-        echo -e "    ${GREEN}Found:${NC} /var/log/secure (RHEL/CentOS)"
+        echo -e "    ${GREEN}检测到：${NC} /var/log/secure（RHEL/CentOS）"
         DETECTED_LOG="/var/log/secure"
     else
         DETECTED_LOG="/var/log/auth.log"
     fi
 
-    prompt "Log path [$DETECTED_LOG]:"
+    prompt "日志路径 [$DETECTED_LOG]:"
     read -r LOG_PATH
     LOG_PATH="${LOG_PATH:-$DETECTED_LOG}"
 
-    # --- systemd service ---
+    # --- systemd 服务 ---
     echo ""
-    prompt "Install systemd service so SSHHGuard starts on boot? [Y/n]"
+    prompt "是否安装 systemd 服务（开机自启）？[Y/n]"
     read -r INSTALL_SERVICE
     INSTALL_SERVICE="${INSTALL_SERVICE:-y}"
 
-    # --- Summary ---
+    # --- 确认摘要 ---
     echo ""
-    echo -e "${CYAN}${BOLD}  ─── Review ───${NC}"
+    echo -e "${CYAN}${BOLD}  ─── 安装确认 ───${NC}"
     echo ""
-    echo -e "  ${BOLD}Install dir:${NC}    $INSTALL_DIR"
-    echo -e "  ${BOLD}Binary:${NC}         $INSTALL_DIR/$BINARY_NAME"
-    echo -e "  ${BOLD}Log file:${NC}      $LOG_PATH"
-    echo -e "  ${BOLD}Telegram token:${NC} ${TELEGRAM_TOKEN:0:8}..."
-    echo -e "  ${BOLD}Telegram chat:${NC}  $TELEGRAM_CHAT_ID"
-    echo -e "  ${BOLD}systemd service:${NC} $([[ "$INSTALL_SERVICE" =~ ^[Yy]$ ]] && echo 'Yes' || echo 'No')"
+    echo -e "  ${BOLD}安装目录：${NC}      $INSTALL_DIR"
+    echo -e "  ${BOLD}二进制文件：${NC}    $INSTALL_DIR/$BINARY_NAME"
+    echo -e "  ${BOLD}日志文件：${NC}      $LOG_PATH"
+    echo -e "  ${BOLD}Telegram Token：${NC} ${TELEGRAM_TOKEN:0:8}..."
+    echo -e "  ${BOLD}Telegram Chat：${NC}  $TELEGRAM_CHAT_ID"
+    echo -e "  ${BOLD}systemd 服务：${NC}   $([[ "$INSTALL_SERVICE" =~ ^[Yy]$ ]] && echo '是' || echo '否')"
     echo ""
 
-    prompt "Proceed with installation? [Y/n]"
+    prompt "确认开始安装？[Y/n]"
     read -r CONFIRM
     if [[ ! "${CONFIRM:-y}" =~ ^[Yy]$ ]]; then
-        die "Installation cancelled."
+        die "安装已取消。"
     fi
 }
 
 # -----------------------------------------------------------
-# Write env file
+# 写入环境变量文件
 # -----------------------------------------------------------
 write_env() {
     mkdir -p "$(dirname "$ENV_FILE")"
     cat > "$ENV_FILE" <<EOF
-# SSHHGuard environment — managed by install.sh
+# SSHHGuard 环境变量 — 由 install.sh 管理
 SSHGUARD_TELEGRAM_TOKEN=$TELEGRAM_TOKEN
 SSHGUARD_TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID
 SSHGUARD_LOG_PATH=$LOG_PATH
 EOF
     chmod 600 "$ENV_FILE"
-    info "Environment file written to $ENV_FILE"
+    info "环境变量文件已写入 $ENV_FILE"
 }
 
 # -----------------------------------------------------------
-# Install systemd service
+# 安装 systemd 服务
 # -----------------------------------------------------------
 install_service() {
     if [[ ! "$INSTALL_SERVICE" =~ ^[Yy]$ ]]; then
-        info "Skipping systemd service. Run manually:"
+        info "已跳过 systemd 服务安装。手动运行方式："
         echo ""
         echo "  $INSTALL_DIR/$BINARY_NAME -token <token> -chat-id <id>"
         return
@@ -271,7 +199,7 @@ install_service() {
 
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=SSHHGuard — SSH Login Monitor & Telegram Notifier
+Description=SSHHGuard - SSH 登录监控与 Telegram 通知
 After=network-online.target
 Wants=network-online.target
 
@@ -284,7 +212,7 @@ RestartSec=30
 StandardOutput=journal
 StandardError=journal
 
-# Security hardening
+# 安全加固
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
@@ -297,27 +225,27 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    info "systemd service installed at $SERVICE_FILE"
+    info "systemd 服务已安装至 $SERVICE_FILE"
 
-    prompt "Start SSHHGuard now? [Y/n]"
+    prompt "是否现在启动 SSHHGuard？[Y/n]"
     read -r START_NOW
     if [[ "${START_NOW:-y}" =~ ^[Yy]$ ]]; then
         systemctl enable --now sshguard
-        info "Service started and enabled on boot."
+        info "服务已启动并设为开机自启。"
         echo ""
-        echo "  Manage with:"
-        echo "    systemctl status sshguard"
-        echo "    journalctl -u sshguard -f"
+        echo "  管理命令："
+        echo "    systemctl status sshguard    # 查看状态"
+        echo "    journalctl -u sshguard -f    # 查看日志"
     else
         systemctl enable sshguard
-        info "Service enabled (will start on next boot)."
+        info "服务已设为开机自启（将在下次重启后启动）。"
         echo ""
-        echo "  Start manually:  systemctl start sshguard"
+        echo "  手动启动：systemctl start sshguard"
     fi
 }
 
 # -----------------------------------------------------------
-# Main
+# 主流程
 # -----------------------------------------------------------
 main() {
     banner
@@ -325,13 +253,13 @@ main() {
     check_deps
 
     echo ""
-    download_artifact
+    download_binary
     configure
     write_env
     install_service
 
     echo ""
-    echo -e "${GREEN}${BOLD}  ✓ Installation complete!${NC}"
+    echo -e "${GREEN}${BOLD}  ✓ 安装完成！${NC}"
     echo ""
 }
 
