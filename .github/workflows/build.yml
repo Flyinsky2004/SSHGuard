@@ -10,14 +10,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goos: [linux, darwin]
-        goarch: [amd64, arm64]
-        include:
-          - goos: linux
-            goarch: arm
-            goarm: "7"
     steps:
       - uses: actions/checkout@v4
 
@@ -25,28 +17,20 @@ jobs:
         with:
           go-version: "1.25"
 
-      - name: Test
-        run: go test -race ./...
-
       - name: Vet
         run: go vet ./...
 
+      - name: Test
+        run: go test -race ./...
+
       - name: Build
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          GOARM: ${{ matrix.goarm || '0' }}
         run: |
-          binary="sshguard-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('-v{0}', matrix.goarm) || '' }}"
-          if [ "$GOOS" = "windows" ]; then
-            binary="${binary}.exe"
-          fi
-          go build -ldflags="-s -w" -o "$binary" .
-          echo "artifact=$binary" >> "$GITHUB_ENV"
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o sshguard .
+          echo "artifact=sshguard" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sshguard-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('-v{0}', matrix.goarm) || '' }}
+          name: sshguard-linux-amd64
           path: ${{ env.artifact }}
 
   release:
