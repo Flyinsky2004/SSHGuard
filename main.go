@@ -10,6 +10,15 @@ import (
 func main() {
 	cfg := parseFlags()
 
+	var err error
+	aliases, err = newAliasStore(cfg.AliasFile)
+	if err != nil {
+		log.Fatalf("加载别名文件失败: %v", err)
+	}
+
+	// 启动机器人命令处理
+	startBot(cfg.Token, cfg.ChatID)
+
 	// 上线通知
 	if err := notifyStatus(cfg.Token, cfg.ChatID, "在线"); err != nil {
 		log.Printf("上线通知发送失败: %v", err)

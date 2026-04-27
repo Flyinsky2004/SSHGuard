@@ -42,7 +42,7 @@ func notifyTelegram(token, chatID string, ev *SSHEvent) error {
 			"时间: %s",
 		escapeHTML(serverIdent),
 		escapeHTML(ev.User),
-		fmt.Sprintf("%s:%s", ev.SourceIP, ev.SourcePort),
+		fmt.Sprintf("%s:%s", aliases.formatIP(ev.SourceIP), ev.SourcePort),
 		ev.AuthMethod,
 		ev.Timestamp.Format("2006-01-02 15:04:05"),
 	)

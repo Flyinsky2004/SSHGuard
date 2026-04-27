@@ -8,9 +8,10 @@ import (
 
 // Config holds all configuration for SSHGuard.
 type Config struct {
-	LogPath string
-	Token   string
-	ChatID  string
+	LogPath   string
+	Token     string
+	ChatID    string
+	AliasFile string
 }
 
 func parseFlags() *Config {
@@ -19,6 +20,7 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.Token, "token", os.Getenv("SSHGUARD_TELEGRAM_TOKEN"), "Telegram Bot Token (环境变量: SSHGUARD_TELEGRAM_TOKEN)")
 	flag.StringVar(&cfg.ChatID, "chat-id", os.Getenv("SSHGUARD_TELEGRAM_CHAT_ID"), "Telegram Chat ID (环境变量: SSHGUARD_TELEGRAM_CHAT_ID)")
 	flag.StringVar(&cfg.LogPath, "log", "", "SSH 日志路径 (留空则自动检测; 环境变量: SSHGUARD_LOG_PATH)")
+	flag.StringVar(&cfg.AliasFile, "alias-file", "sshguard_aliases.json", "IP 别名文件路径 (环境变量: SSHGUARD_ALIAS_FILE)")
 	flag.Parse()
 
 	if cfg.LogPath == "" {
