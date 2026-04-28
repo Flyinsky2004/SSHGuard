@@ -13,12 +13,24 @@ import (
 
 // SSHEvent represents a parsed SSH login event.
 type SSHEvent struct {
-	Timestamp time.Time
-	Hostname  string
-	User      string
-	SourceIP  string
-	SourcePort string
-	AuthMethod string
+	Timestamp  time.Time `json:"timestamp"`
+	Hostname   string    `json:"hostname"`
+	User       string    `json:"user"`
+	SourceIP   string    `json:"source_ip"`
+	SourcePort string    `json:"source_port"`
+	AuthMethod string    `json:"auth_method"`
+}
+
+// newEventFromPAM creates an SSHEvent from PAM environment variables.
+func newEventFromPAM(user, sourceIP, hostname string) *SSHEvent {
+	return &SSHEvent{
+		Timestamp:  time.Now(),
+		Hostname:   hostname,
+		User:       user,
+		SourceIP:   sourceIP,
+		SourcePort: "",
+		AuthMethod: "pam",
+	}
 }
 
 type telegramMessage struct {
@@ -42,7 +54,7 @@ func notifyTelegram(token, chatID string, ev *SSHEvent) error {
 			"时间: %s",
 		escapeHTML(serverIdent),
 		escapeHTML(ev.User),
-		fmt.Sprintf("%s:%s", ev.SourceIP, ev.SourcePort),
+		formatSource(ev),
 		ev.AuthMethod,
 		ev.Timestamp.Format("2006-01-02 15:04:05"),
 	)
@@ -186,6 +198,13 @@ func notifyStatus(token, chatID, status string) error {
 	}
 
 	return nil
+}
+
+func formatSource(ev *SSHEvent) string {
+	if ev.SourcePort != "" {
+		return ev.SourceIP + ":" + ev.SourcePort
+	}
+	return ev.SourceIP
 }
 
 func escapeHTML(s string) string {

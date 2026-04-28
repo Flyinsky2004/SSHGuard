@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,20 +11,35 @@ import (
 func main() {
 	cfg := parseFlags()
 
-	// 设置服务器别名
+	// PAM helper mode: send event and exit immediately.
+	if cfg.PAMMode {
+		runPAMHelper(cfg.SocketPath)
+		return
+	}
+
+	// Set server alias.
 	if cfg.Alias != "" {
 		applyServerName(cfg.Alias)
 	}
 
-	// 上线通知
+	// Online notification.
 	if err := notifyStatus(cfg.Token, cfg.ChatID, "在线"); err != nil {
 		log.Printf("上线通知发送失败: %v", err)
 	}
 
 	events := make(chan *SSHEvent, 64)
+	var listener net.Listener
 
-	if err := monitorLog(cfg.LogPath, events); err != nil {
-		log.Fatalf("启动日志监控失败: %v", err)
+	if cfg.Mode == "log" {
+		if err := monitorLog(cfg.LogPath, events); err != nil {
+			log.Fatalf("启动日志监控失败: %v", err)
+		}
+	} else {
+		ln, err := listenSocket(cfg.SocketPath, events)
+		if err != nil {
+			log.Fatalf("启动 Socket 监听失败: %v", err)
+		}
+		listener = ln
 	}
 
 	sigCh := make(chan os.Signal, 1)
@@ -33,7 +49,7 @@ func main() {
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				log.Println("日志监控已停止，程序退出")
+				log.Println("事件源已停止，程序退出")
 				notifyStatus(cfg.Token, cfg.ChatID, "离线")
 				return
 			}
@@ -42,6 +58,9 @@ func main() {
 			}
 		case sig := <-sigCh:
 			log.Printf("收到信号 %v，正在关闭", sig)
+			if listener != nil {
+				listener.Close()
+			}
 			notifyStatus(cfg.Token, cfg.ChatID, "离线")
 			return
 		}

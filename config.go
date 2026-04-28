@@ -8,10 +8,13 @@ import (
 
 // Config holds all configuration for SSHGuard.
 type Config struct {
-	LogPath string
-	Token   string
-	ChatID  string
-	Alias   string
+	LogPath    string
+	Token      string
+	ChatID     string
+	Alias      string
+	Mode       string
+	SocketPath string
+	PAMMode    bool
 }
 
 func parseFlags() *Config {
@@ -21,6 +24,9 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.ChatID, "chat-id", os.Getenv("SSHGUARD_TELEGRAM_CHAT_ID"), "Telegram Chat ID (环境变量: SSHGUARD_TELEGRAM_CHAT_ID)")
 	flag.StringVar(&cfg.LogPath, "log", "", "SSH 日志路径 (留空则自动检测; 环境变量: SSHGUARD_LOG_PATH)")
 	flag.StringVar(&cfg.Alias, "alias", os.Getenv("SSHGUARD_ALIAS"), "服务器别名 (环境变量: SSHGUARD_ALIAS)")
+	flag.StringVar(&cfg.Mode, "mode", stringEnv("SSHGUARD_MODE", "socket"), "运行模式: socket 或 log (默认: socket)")
+	flag.StringVar(&cfg.SocketPath, "socket", stringEnv("SSHGUARD_SOCKET_PATH", "/var/run/sshguard.sock"), "Unix Socket 路径 (环境变量: SSHGUARD_SOCKET_PATH)")
+	flag.BoolVar(&cfg.PAMMode, "pam", false, "PAM Helper 模式 (由 pam_exec.so 调用)")
 	flag.Parse()
 
 	if cfg.LogPath == "" {
@@ -31,6 +37,11 @@ func parseFlags() *Config {
 		}
 	}
 
+	// PAM helper mode does not need Telegram credentials.
+	if cfg.PAMMode {
+		return cfg
+	}
+
 	if cfg.Token == "" {
 		exitErr("缺少 Telegram Bot Token (-token 或环境变量 SSHGUARD_TELEGRAM_TOKEN)")
 	}
@@ -38,12 +49,23 @@ func parseFlags() *Config {
 		exitErr("缺少 Telegram Chat ID (-chat-id 或环境变量 SSHGUARD_TELEGRAM_CHAT_ID)")
 	}
 
+	if cfg.Mode != "socket" && cfg.Mode != "log" {
+		exitErr("无效的运行模式: -mode 必须是 socket 或 log")
+	}
+
 	return cfg
+}
+
+func stringEnv(key, defaultVal string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return defaultVal
 }
 
 func exitErr(msg string) {
 	fmt.Fprintln(os.Stderr, "sshguard:", msg)
-	fmt.Fprintln(os.Stderr, "用法: sshguard -token <bot_token> -chat-id <chat_id> [-log <路径>]")
+	fmt.Fprintln(os.Stderr, "用法: sshguard -token <bot_token> -chat-id <chat_id> [-mode socket|log]")
 	os.Exit(1)
 }
 

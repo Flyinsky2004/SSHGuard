@@ -18,8 +18,10 @@ NC='\033[0m'
 
 INSTALL_DIR="/opt/SSHGuard"
 BINARY_NAME="sshguard"
+PAM_HELPER_NAME="sshguard-pam-helper"
 ENV_FILE="/etc/sshguard/env"
 SERVICE_FILE="/etc/systemd/system/sshguard.service"
+SOCKET_PATH="/var/run/sshguard.sock"
 
 # 下载地址 — GitHub Releases 中的预编译二进制
 DOWNLOAD_URL="https://github.com/Flyinsky2004/SSHGuard/releases/download/main/sshguard"
@@ -93,7 +95,40 @@ download_binary() {
     fi
 
     chmod +x "$INSTALL_DIR/$BINARY_NAME"
+
+    # 创建 PAM helper 包装脚本
+    cat > "$INSTALL_DIR/$PAM_HELPER_NAME" <<'SCRIPT'
+#!/bin/sh
+exec /opt/SSHGuard/sshguard -pam
+SCRIPT
+    chmod +x "$INSTALL_DIR/$PAM_HELPER_NAME"
+
     info "二进制文件已安装至 $INSTALL_DIR/$BINARY_NAME"
+    info "PAM Helper 已安装至 $INSTALL_DIR/$PAM_HELPER_NAME"
+}
+
+# -----------------------------------------------------------
+# 配置 PAM
+# -----------------------------------------------------------
+configure_pam() {
+    local PAM_SSHD="/etc/pam.d/sshd"
+    local PAM_LINE="session    optional     pam_exec.so    $INSTALL_DIR/$PAM_HELPER_NAME"
+
+    if [[ ! -f "$PAM_SSHD" ]]; then
+        warn "未找到 $PAM_SSHD，跳过 PAM 配置。"
+        warn "请手动将以下行添加到 PAM sshd 配置："
+        echo "  $PAM_LINE"
+        return
+    fi
+
+    if grep -qF "$PAM_HELPER_NAME" "$PAM_SSHD" 2>/dev/null; then
+        info "PAM 已配置 (sshd)，无需重复添加。"
+        return
+    fi
+
+    info "配置 PAM (/etc/pam.d/sshd)..."
+    echo "$PAM_LINE" >> "$PAM_SSHD"
+    info "已添加 pam_exec.so 到 $PAM_SSHD"
 }
 
 # -----------------------------------------------------------
@@ -133,22 +168,45 @@ configure() {
         break
     done
 
-    # --- 日志路径 ---
+    # --- 运行模式 ---
     echo ""
-    echo "  SSH 认证日志路径（留空则自动检测）："
-    if [[ -f /var/log/auth.log ]]; then
-        echo -e "    ${GREEN}检测到：${NC} /var/log/auth.log（Debian/Ubuntu）"
-        DETECTED_LOG="/var/log/auth.log"
-    elif [[ -f /var/log/secure ]]; then
-        echo -e "    ${GREEN}检测到：${NC} /var/log/secure（RHEL/CentOS）"
-        DETECTED_LOG="/var/log/secure"
-    else
-        DETECTED_LOG="/var/log/auth.log"
+    echo "  运行模式："
+    echo "    socket  — PAM Socket 模式（默认推荐，不依赖 rsyslog）"
+    echo "    log    — 日志监控模式（备选，需要系统写入 auth log）"
+    RUN_MODE="socket"
+    prompt "运行模式 [$RUN_MODE]:"
+    read -r answer
+    if [[ -n "$answer" ]]; then
+        if [[ "$answer" != "socket" && "$answer" != "log" ]]; then
+            die "无效的运行模式：$answer（必须是 socket 或 log）"
+        fi
+        RUN_MODE="$answer"
     fi
 
-    prompt "日志路径 [$DETECTED_LOG]:"
-    read -r LOG_PATH
-    LOG_PATH="${LOG_PATH:-$DETECTED_LOG}"
+    # --- 日志路径 (仅在 log 模式下需要) ---
+    if [[ "$RUN_MODE" == "log" ]]; then
+        if [[ -f /var/log/auth.log ]]; then
+            echo -e "    ${GREEN}检测到：${NC} /var/log/auth.log（Debian/Ubuntu）"
+            DETECTED_LOG="/var/log/auth.log"
+        elif [[ -f /var/log/secure ]]; then
+            echo -e "    ${GREEN}检测到：${NC} /var/log/secure（RHEL/CentOS）"
+            DETECTED_LOG="/var/log/secure"
+        else
+            DETECTED_LOG="/var/log/auth.log"
+        fi
+
+        prompt "日志路径 [$DETECTED_LOG]:"
+        read -r LOG_PATH
+        LOG_PATH="${LOG_PATH:-$DETECTED_LOG}"
+    else
+        LOG_PATH=""
+    fi
+
+    # --- PAM 配置 ---
+    echo ""
+    prompt "是否配置 PAM (/etc/pam.d/sshd)？[Y/n]"
+    read -r CONFIGURE_PAM
+    CONFIGURE_PAM="${CONFIGURE_PAM:-y}"
 
     # --- systemd 服务 ---
     echo ""
@@ -161,10 +219,15 @@ configure() {
     echo -e "${CYAN}${BOLD}  ─── 安装确认 ───${NC}"
     echo ""
     echo -e "  ${BOLD}安装目录：${NC}      $INSTALL_DIR"
-    echo -e "  ${BOLD}二进制文件：${NC}    $INSTALL_DIR/$BINARY_NAME"
-    echo -e "  ${BOLD}日志文件：${NC}      $LOG_PATH"
+    echo -e "  ${BOLD}运行模式：${NC}      $RUN_MODE"
+    if [[ "$RUN_MODE" == "log" ]]; then
+        echo -e "  ${BOLD}日志文件：${NC}      $LOG_PATH"
+    else
+        echo -e "  ${BOLD}Socket 路径：${NC}   $SOCKET_PATH"
+    fi
     echo -e "  ${BOLD}Telegram Token：${NC} ${TELEGRAM_TOKEN:0:8}..."
     echo -e "  ${BOLD}Telegram Chat：${NC}  $TELEGRAM_CHAT_ID"
+    echo -e "  ${BOLD}PAM 配置：${NC}      $([[ "$CONFIGURE_PAM" =~ ^[Yy]$ ]] && echo '是' || echo '否')"
     echo -e "  ${BOLD}systemd 服务：${NC}   $([[ "$INSTALL_SERVICE" =~ ^[Yy]$ ]] && echo '是' || echo '否')"
     echo ""
 
@@ -184,8 +247,14 @@ write_env() {
 # SSHHGuard 环境变量 — 由 install.sh 管理
 SSHGUARD_TELEGRAM_TOKEN=$TELEGRAM_TOKEN
 SSHGUARD_TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID
-SSHGUARD_LOG_PATH=$LOG_PATH
+SSHGUARD_MODE=$RUN_MODE
+SSHGUARD_SOCKET_PATH=$SOCKET_PATH
 EOF
+
+    if [[ -n "${LOG_PATH:-}" ]]; then
+        echo "SSHGUARD_LOG_PATH=$LOG_PATH" >> "$ENV_FILE"
+    fi
+
     chmod 600 "$ENV_FILE"
     info "环境变量文件已写入 $ENV_FILE"
 }
@@ -199,6 +268,12 @@ install_service() {
         echo ""
         echo "  $INSTALL_DIR/$BINARY_NAME -token <token> -chat-id <id>"
         return
+    fi
+
+    # 构建 ReadOnlyPaths 列表
+    local EXTRA_PATHS=""
+    if [[ "$RUN_MODE" == "log" && -n "${LOG_PATH:-}" ]]; then
+        EXTRA_PATHS="ReadOnlyPaths=$(dirname "$LOG_PATH")"
     fi
 
     cat > "$SERVICE_FILE" <<EOF
@@ -221,8 +296,8 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=$INSTALL_DIR
-ReadOnlyPaths=$(dirname "$LOG_PATH")
+ReadWritePaths=$INSTALL_DIR /var/run
+$EXTRA_PATHS
 
 [Install]
 WantedBy=multi-user.target
@@ -260,10 +335,21 @@ main() {
     download_binary
     configure
     write_env
+
+    # PAM 配置
+    if [[ "$CONFIGURE_PAM" =~ ^[Yy]$ ]]; then
+        configure_pam
+    fi
+
     install_service
 
     echo ""
     echo -e "${GREEN}${BOLD}  ✓ 安装完成！${NC}"
+    echo ""
+    if [[ "$RUN_MODE" == "socket" && "$CONFIGURE_PAM" =~ ^[Yy]$ ]]; then
+        echo "  提示：新 SSH 登录将自动触发 Telegram 通知。"
+        echo "  无需额外配置 rsyslog 或日志转发。"
+    fi
     echo ""
 }
 
