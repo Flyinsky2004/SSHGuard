@@ -347,6 +347,6 @@ main() {
 
 # Sourcing the script is useful for installer migration tests. Piped bash has
 # an empty BASH_SOURCE[0], so it still runs the installer.
-if [[ -z ${BASH_SOURCE[0]} || ${BASH_SOURCE[0]} == "$0" ]]; then
+if [[ -z ${BASH_SOURCE[0]-} || ${BASH_SOURCE[0]-} == "$0" ]]; then
     main "$@"
 fi
