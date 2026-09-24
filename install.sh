@@ -61,8 +61,8 @@ check_platform() {
 }
 
 read_env_value() {
-    local key="$1" file="$2"
-    awk -v key="$key" '
+    local key="$1" file="$2" value
+    value=$(awk -v key="$key" '
         {
             line = $0
             sub(/^[[:space:]]*/, "", line)
@@ -74,7 +74,11 @@ read_env_value() {
             }
         }
         END { print value }
-    ' "$file"
+    ' "$file")
+    case $value in
+        \"*\"|\'*\') value=${value:1:-1} ;;
+    esac
+    printf '%s\n' "$value"
 }
 
 credential_missing() {
