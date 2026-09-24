@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"time"
 )
@@ -45,6 +47,17 @@ type telegramResponse struct {
 	Description string `json:"description"`
 }
 
+var telegramClient = &http.Client{Timeout: 10 * time.Second}
+
+// url.Error includes the request URL, which contains the Telegram bot token.
+func telegramRequestError(err error) error {
+	var requestErr *neturl.Error
+	if errors.As(err, &requestErr) {
+		return requestErr.Err
+	}
+	return err
+}
+
 func notifyTelegram(token, chatID string, ev *SSHEvent) error {
 	text := fmt.Sprintf(
 		"<b>SSH 登录</b> 于 <code>%s</code>\n\n"+
@@ -69,9 +82,9 @@ func notifyTelegram(token, chatID string, ev *SSHEvent) error {
 	}
 
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	resp, err := telegramClient.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("发送请求失败: %w", err)
+		return fmt.Errorf("发送请求失败: %w", telegramRequestError(err))
 	}
 	defer resp.Body.Close()
 
@@ -183,9 +196,9 @@ func notifyStatus(token, chatID, status string) error {
 	}
 
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	resp, err := telegramClient.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("发送状态请求失败: %w", err)
+		return fmt.Errorf("发送状态请求失败: %w", telegramRequestError(err))
 	}
 	defer resp.Body.Close()
 

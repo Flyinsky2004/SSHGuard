@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -9,7 +13,16 @@ import (
 )
 
 func listenSocket(socketPath string, events chan<- *SSHEvent) (net.Listener, error) {
-	os.Remove(socketPath)
+	if info, err := os.Lstat(socketPath); err == nil {
+		if info.Mode()&os.ModeSocket == 0 {
+			return nil, fmt.Errorf("Socket 路径已被非 Socket 文件占用: %s", socketPath)
+		}
+		if err := os.Remove(socketPath); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
 	if err != nil {
@@ -31,8 +44,7 @@ func listenSocket(socketPath string, events chan<- *SSHEvent) (net.Listener, err
 
 			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 
-			buf := make([]byte, 4096)
-			n, err := conn.Read(buf)
+			buf, err := bufio.NewReader(io.LimitReader(conn, 4096)).ReadBytes('\n')
 			if err != nil {
 				conn.Write([]byte("ERROR: read failed\n"))
 				conn.Close()
@@ -40,7 +52,7 @@ func listenSocket(socketPath string, events chan<- *SSHEvent) (net.Listener, err
 			}
 
 			var pe pamEvent
-			if err := json.Unmarshal(buf[:n], &pe); err != nil {
+			if err := json.Unmarshal(buf, &pe); err != nil {
 				conn.Write([]byte("ERROR: invalid JSON\n"))
 				conn.Close()
 				continue

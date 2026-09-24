@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -10,6 +11,10 @@ import (
 
 func main() {
 	cfg := parseFlags()
+	if cfg.ShowVersion {
+		fmt.Println(version)
+		return
+	}
 
 	// PAM helper mode: send event and exit immediately.
 	if cfg.PAMMode {
@@ -20,11 +25,6 @@ func main() {
 	// Set server alias.
 	if cfg.Alias != "" {
 		applyServerName(cfg.Alias)
-	}
-
-	// Online notification.
-	if err := notifyStatus(cfg.Token, cfg.ChatID, "在线"); err != nil {
-		log.Printf("上线通知发送失败: %v", err)
 	}
 
 	events := make(chan *SSHEvent, 64)
@@ -40,6 +40,10 @@ func main() {
 			log.Fatalf("启动 Socket 监听失败: %v", err)
 		}
 		listener = ln
+	}
+	// Start the event source before the network request for the online message.
+	if err := notifyStatus(cfg.Token, cfg.ChatID, "在线"); err != nil {
+		log.Printf("上线通知发送失败: %v", err)
 	}
 
 	sigCh := make(chan os.Signal, 1)

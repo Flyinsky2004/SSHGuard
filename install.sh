@@ -1,356 +1,352 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 管道执行时，stdin 是脚本内容而不是终端，会导致 read 读到 EOF 立即退出。
-# 显式将 stdin 重定向到 /dev/tty，确保 curl | bash 场景下交互输入正常。
-exec </dev/tty
-
-# ============================================================
-# SSHHGuard — 交互式安装脚本
-# ============================================================
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
-
+RELEASE_VERSION="v0.0.2"
+RELEASE_BASE="https://github.com/Flyinsky2004/SSHGuard/releases/download/$RELEASE_VERSION"
 INSTALL_DIR="/opt/SSHGuard"
-BINARY_NAME="sshguard"
-PAM_HELPER_NAME="sshguard-pam-helper"
 ENV_FILE="/etc/sshguard/env"
+LEGACY_ENV_FILE="/etc/sshguard.env"
 SERVICE_FILE="/etc/systemd/system/sshguard.service"
-SOCKET_PATH="/var/run/sshguard.sock"
+PAM_FILE="/etc/pam.d/sshd"
+PAM_HELPER="$INSTALL_DIR/sshguard-pam-helper"
+SOCKET_PATH="/run/sshguard.sock"
 
-# 下载地址 — GitHub Releases 中的预编译二进制
-DOWNLOAD_URL="https://github.com/Flyinsky2004/SSHGuard/releases/download/main/sshguard"
+LOCAL_BINARY=""
+UPDATE_ONLY=false
+INSTALLED=false
+INSTALL_SERVICE=true
+RUN_MODE=""
+LOG_PATH=""
+SOURCE_ENV=""
+STAGING_DIR=""
+BACKUP_DIR=""
 
-# -----------------------------------------------------------
-# 工具函数
-# -----------------------------------------------------------
-banner() {
-    echo -e "${CYAN}${BOLD}"
-    echo "  ╔══════════════════════════════════╗"
-    echo "  ║        SSHHGuard 安装程序        ║"
-    echo "  ╚══════════════════════════════════╝"
-    echo -e "${NC}"
+info() { printf '[+] %s\n' "$*"; }
+warn() { printf '[!] %s\n' "$*" >&2; }
+die() { printf '[✗] %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat <<'EOF'
+用法: sudo bash install.sh [--update] [--binary /path/to/sshguard]
+
+默认检测旧安装并升级；未安装时进入交互式安装。
+--update 仅更新已有安装，保留 Telegram 配置和原有运行模式。
+--binary 使用本地 v0.0.2 二进制文件，供发布前或离线安装使用。
+EOF
 }
 
-info()    { echo -e "${GREEN}[+]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[!]${NC} $*"; }
-error()   { echo -e "${RED}[✗]${NC} $*"; }
-prompt()  { echo -ne "${BOLD}[?]${NC} $* "; }
-
-die() {
-    error "$*"
-    exit 1
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --update) UPDATE_ONLY=true; shift ;;
+            --binary)
+                [[ $# -ge 2 ]] || die "--binary 缺少文件路径"
+                LOCAL_BINARY="$2"
+                shift 2
+                ;;
+            -h|--help) usage; exit 0 ;;
+            *) die "未知参数: $1" ;;
+        esac
+    done
 }
 
-require_root() {
-    if [[ $EUID -ne 0 ]]; then
-        die "请使用 root 权限运行此脚本：sudo bash install.sh"
+check_platform() {
+    [[ $EUID -eq 0 ]] || die "请以 root 身份运行"
+    [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || die "v0.0.2 预编译文件仅支持 Linux amd64"
+    command -v systemctl >/dev/null || die "未找到 systemctl"
+    if [[ -z $LOCAL_BINARY ]]; then
+        command -v curl >/dev/null || die "未找到 curl"
+        command -v sha256sum >/dev/null || die "未找到 sha256sum"
     fi
 }
 
-# -----------------------------------------------------------
-# 检查依赖
-# -----------------------------------------------------------
-check_deps() {
-    info "检查依赖..."
+read_env_value() {
+    local key="$1" file="$2"
+    awk -v key="$key" 'index($0, key "=") == 1 { value = substr($0, length(key) + 2) } END { print value }' "$file"
+}
 
-    local missing=()
+detect_installation() {
+    if [[ -f $ENV_FILE ]]; then
+        SOURCE_ENV="$ENV_FILE"
+    elif [[ -f $LEGACY_ENV_FILE ]]; then
+        SOURCE_ENV="$LEGACY_ENV_FILE"
+    fi
+    if [[ -e $INSTALL_DIR/sshguard || -e $SERVICE_FILE || -n $SOURCE_ENV ]]; then
+        INSTALLED=true
+    fi
+}
 
-    command -v curl >/dev/null 2>&1 || missing+=("curl")
+detect_log_path() {
+    if [[ -f /var/log/auth.log ]]; then
+        printf '%s\n' /var/log/auth.log
+    elif [[ -f /var/log/secure ]]; then
+        printf '%s\n' /var/log/secure
+    else
+        printf '%s\n' /var/log/auth.log
+    fi
+}
 
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        warn "缺少依赖：${missing[*]}"
-        prompt "是否现在安装？（apt-get install ${missing[*]}）[Y/n]"
-        read -r ans
-        if [[ "${ans:-y}" =~ ^[Yy]$ ]]; then
-            apt-get update -qq && apt-get install -y "${missing[@]}"
+load_existing_config() {
+    [[ -n $SOURCE_ENV ]] || die "发现旧安装，但未找到 $ENV_FILE 或 $LEGACY_ENV_FILE；无法安全迁移 Telegram 配置"
+    [[ -n $(read_env_value SSHGUARD_TELEGRAM_TOKEN "$SOURCE_ENV") ]] || die "$SOURCE_ENV 缺少 SSHGUARD_TELEGRAM_TOKEN"
+    [[ -n $(read_env_value SSHGUARD_TELEGRAM_CHAT_ID "$SOURCE_ENV") ]] || die "$SOURCE_ENV 缺少 SSHGUARD_TELEGRAM_CHAT_ID"
+
+    RUN_MODE=$(read_env_value SSHGUARD_MODE "$SOURCE_ENV")
+    if [[ -z $RUN_MODE ]]; then
+        # The legacy release had only log monitoring. Preserve that behavior.
+        if [[ $SOURCE_ENV == "$LEGACY_ENV_FILE" || -n $(read_env_value SSHGUARD_LOG_PATH "$SOURCE_ENV") ]]; then
+            RUN_MODE=log
         else
-            die "缺少依赖，无法继续：${missing[*]}"
+            RUN_MODE=socket
         fi
     fi
+    [[ $RUN_MODE == log || $RUN_MODE == socket ]] || die "旧配置中的 SSHGUARD_MODE 无效: $RUN_MODE"
 
-    info "依赖检查通过"
+    LOG_PATH=$(read_env_value SSHGUARD_LOG_PATH "$SOURCE_ENV")
+    if [[ $RUN_MODE == log ]]; then
+        LOG_PATH=${LOG_PATH:-$(detect_log_path)}
+        [[ -f $LOG_PATH ]] || die "SSH 日志文件不存在: $LOG_PATH"
+    else
+        SOCKET_PATH=$(read_env_value SSHGUARD_SOCKET_PATH "$SOURCE_ENV")
+        SOCKET_PATH=${SOCKET_PATH:-/run/sshguard.sock}
+        [[ $SOCKET_PATH != *"'"* && $SOCKET_PATH != *$'\n'* ]] || die "Socket 路径包含不支持的字符"
+        [[ -f $PAM_FILE ]] || die "Socket 模式需要 $PAM_FILE"
+    fi
+
+    if [[ ! -e $SERVICE_FILE ]]; then
+        INSTALL_SERVICE=false
+    fi
+    info "检测到已安装 SSHGuard；保留 $SOURCE_ENV 中的凭据，运行模式: $RUN_MODE"
+    if [[ -x $INSTALL_DIR/sshguard ]]; then
+        local old_version
+        old_version=$("$INSTALL_DIR/sshguard" -version 2>/dev/null || true)
+        [[ $old_version == "$RELEASE_VERSION" ]] && info "当前二进制为 $old_version，将重新部署配置" || info "当前二进制为旧版或无版本标识"
+    fi
 }
 
-# -----------------------------------------------------------
-# 下载二进制
-# -----------------------------------------------------------
-download_binary() {
-    info "正在下载 SSHHGuard 二进制文件..."
-    info "下载地址：$DOWNLOAD_URL"
+prompt() {
+    local label="$1" default="$2" answer
+    printf '%s [%s]: ' "$label" "$default" >&2
+    IFS= read -r answer || die "读取输入失败"
+    printf '%s\n' "${answer:-$default}"
+}
 
+configure_new() {
+    [[ -r /dev/tty ]] || die "首次安装需要交互式终端"
+    # curl | bash consumes stdin; read prompts from the user's terminal.
+    exec </dev/tty
+    printf 'Telegram Bot Token: ' >&2
+    IFS= read -r TELEGRAM_TOKEN
+    [[ -n $TELEGRAM_TOKEN && $TELEGRAM_TOKEN != *$'\n'* ]] || die "Telegram Bot Token 不能为空"
+    printf 'Telegram Chat ID: ' >&2
+    IFS= read -r TELEGRAM_CHAT_ID
+    [[ -n $TELEGRAM_CHAT_ID && $TELEGRAM_CHAT_ID != *$'\n'* ]] || die "Telegram Chat ID 不能为空"
+    RUN_MODE=$(prompt '运行模式 (socket/log)' socket)
+    [[ $RUN_MODE == socket || $RUN_MODE == log ]] || die "无效的运行模式: $RUN_MODE"
+    if [[ $RUN_MODE == log ]]; then
+        LOG_PATH=$(prompt 'SSH 日志路径' "$(detect_log_path)")
+        [[ -f $LOG_PATH ]] || die "SSH 日志文件不存在: $LOG_PATH"
+    else
+        [[ -f $PAM_FILE ]] || die "Socket 模式需要 $PAM_FILE"
+    fi
+    local service_answer
+    service_answer=$(prompt '安装 systemd 服务？(Y/n)' Y)
+    [[ $service_answer == y || $service_answer == Y ]] || INSTALL_SERVICE=false
+}
+
+stage_binary() {
+    STAGING_DIR=$(mktemp -d)
+    if [[ -n $LOCAL_BINARY ]]; then
+        [[ -f $LOCAL_BINARY ]] || die "找不到本地二进制文件: $LOCAL_BINARY"
+        cp "$LOCAL_BINARY" "$STAGING_DIR/sshguard"
+    else
+        info "下载 $RELEASE_VERSION 二进制文件与校验和"
+        curl -fsSL --retry 3 -o "$STAGING_DIR/sshguard" "$RELEASE_BASE/sshguard" || die "二进制文件下载失败；请确认 v0.0.2 已发布"
+        curl -fsSL --retry 3 -o "$STAGING_DIR/checksums.txt" "$RELEASE_BASE/checksums.txt" || die "校验和下载失败"
+        awk '$2 == "sshguard" && length($1) == 64 { print }' "$STAGING_DIR/checksums.txt" > "$STAGING_DIR/sshguard.sha256"
+        [[ $(wc -l < "$STAGING_DIR/sshguard.sha256") -eq 1 ]] || die "checksums.txt 缺少唯一的 sshguard 校验和"
+        (cd "$STAGING_DIR" && sha256sum -c --status sshguard.sha256) || die "二进制文件 SHA-256 校验失败"
+    fi
+    chmod 755 "$STAGING_DIR/sshguard"
+    [[ $("$STAGING_DIR/sshguard" -version 2>/dev/null) == "$RELEASE_VERSION" ]] || die "二进制文件版本不是 $RELEASE_VERSION，或无法在本机运行"
+}
+
+cleanup_stage() {
+    if [[ -n $STAGING_DIR && -d $STAGING_DIR ]]; then
+        rm -r -- "$STAGING_DIR"
+    fi
+}
+
+backup_existing() {
+    [[ $INSTALLED == true ]] || return 0
+    BACKUP_DIR=$(mktemp -d /var/tmp/sshguard-backup.XXXXXX)
+    chmod 700 "$BACKUP_DIR"
+    local path
+    for path in "$INSTALL_DIR/sshguard" "$ENV_FILE" "$SERVICE_FILE" "$PAM_FILE"; do
+        if [[ -f $path ]]; then
+            mkdir -p "$BACKUP_DIR$(dirname "$path")"
+            cp -p "$path" "$BACKUP_DIR$path"
+        fi
+    done
+    info "旧安装备份到 $BACKUP_DIR"
+}
+
+install_binary() {
     mkdir -p "$INSTALL_DIR"
-
-    curl -fsSL --progress-bar -o "$INSTALL_DIR/$BINARY_NAME" "$DOWNLOAD_URL" \
-        || die "下载失败，请检查网络连接和下载地址。"
-
-    # 校验有效性
-    if [[ ! -s "$INSTALL_DIR/$BINARY_NAME" ]]; then
-        die "下载的文件为空，请稍后重试。"
-    fi
-
-    chmod +x "$INSTALL_DIR/$BINARY_NAME"
-
-    # 创建 PAM helper 包装脚本
-    cat > "$INSTALL_DIR/$PAM_HELPER_NAME" <<'SCRIPT'
-#!/bin/sh
-exec /opt/SSHGuard/sshguard -pam
-SCRIPT
-    chmod +x "$INSTALL_DIR/$PAM_HELPER_NAME"
-
-    info "二进制文件已安装至 $INSTALL_DIR/$BINARY_NAME"
-    info "PAM Helper 已安装至 $INSTALL_DIR/$PAM_HELPER_NAME"
+    local staged
+    staged=$(mktemp "$INSTALL_DIR/.sshguard.XXXXXX")
+    install -m 755 "$STAGING_DIR/sshguard" "$staged"
+    mv -f "$staged" "$INSTALL_DIR/sshguard"
 }
 
-# -----------------------------------------------------------
-# 配置 PAM
-# -----------------------------------------------------------
-configure_pam() {
-    local PAM_SSHD="/etc/pam.d/sshd"
-    local PAM_LINE="session    optional     pam_exec.so    $INSTALL_DIR/$PAM_HELPER_NAME"
-
-    if [[ ! -f "$PAM_SSHD" ]]; then
-        warn "未找到 $PAM_SSHD，跳过 PAM 配置。"
-        warn "请手动将以下行添加到 PAM sshd 配置："
-        echo "  $PAM_LINE"
-        return
-    fi
-
-    if grep -qF "$PAM_HELPER_NAME" "$PAM_SSHD" 2>/dev/null; then
-        info "PAM 已配置 (sshd)，无需重复添加。"
-        return
-    fi
-
-    info "配置 PAM (/etc/pam.d/sshd)..."
-    echo "$PAM_LINE" >> "$PAM_SSHD"
-    info "已添加 pam_exec.so 到 $PAM_SSHD"
+set_env_value() {
+    local key="$1" value="$2" staged
+    staged=$(mktemp "$ENV_FILE.XXXXXX")
+    awk -v key="$key" 'index($0, key "=") != 1 { print }' "$ENV_FILE" > "$staged"
+    printf '%s=%s\n' "$key" "$value" >> "$staged"
+    chmod 600 "$staged"
+    mv -f "$staged" "$ENV_FILE"
 }
 
-# -----------------------------------------------------------
-# 交互式配置
-# -----------------------------------------------------------
-configure() {
-    echo ""
-    echo -e "${CYAN}${BOLD}  ─── 配置参数 ───${NC}"
-    echo -e "  按 Enter 使用方括号中的默认值。"
-    echo ""
-
-    # --- Telegram Bot Token ---
-    while true; do
-        prompt "Telegram Bot Token:"
-        read -r TELEGRAM_TOKEN
-
-        if [[ -z "$TELEGRAM_TOKEN" ]]; then
-            warn "Telegram Bot Token 为必填项。"
-            echo "  请在 Telegram 上向 @BotFather 获取：https://t.me/BotFather"
-            continue
-        fi
-        break
-    done
-
-    # --- Telegram Chat ID ---
-    while true; do
-        prompt "Telegram Chat ID:"
-        read -r TELEGRAM_CHAT_ID
-
-        if [[ -z "$TELEGRAM_CHAT_ID" ]]; then
-            warn "Telegram Chat ID 为必填项。"
-            echo "  向你的 Bot 发送 /start，然后访问以下地址查看 chat id："
-            echo "  https://api.telegram.org/bot<TOKEN>/getUpdates"
-            echo "  在返回的 JSON 中找到 'chat':{'id': ...}"
-            continue
-        fi
-        break
-    done
-
-    # --- 运行模式 ---
-    echo ""
-    echo "  运行模式："
-    echo "    socket  — PAM Socket 模式（默认推荐，不依赖 rsyslog）"
-    echo "    log    — 日志监控模式（备选，需要系统写入 auth log）"
-    RUN_MODE="socket"
-    prompt "运行模式 [$RUN_MODE]:"
-    read -r answer
-    if [[ -n "$answer" ]]; then
-        if [[ "$answer" != "socket" && "$answer" != "log" ]]; then
-            die "无效的运行模式：$answer（必须是 socket 或 log）"
-        fi
-        RUN_MODE="$answer"
-    fi
-
-    # --- 日志路径 (仅在 log 模式下需要) ---
-    if [[ "$RUN_MODE" == "log" ]]; then
-        if [[ -f /var/log/auth.log ]]; then
-            echo -e "    ${GREEN}检测到：${NC} /var/log/auth.log（Debian/Ubuntu）"
-            DETECTED_LOG="/var/log/auth.log"
-        elif [[ -f /var/log/secure ]]; then
-            echo -e "    ${GREEN}检测到：${NC} /var/log/secure（RHEL/CentOS）"
-            DETECTED_LOG="/var/log/secure"
-        else
-            DETECTED_LOG="/var/log/auth.log"
-        fi
-
-        prompt "日志路径 [$DETECTED_LOG]:"
-        read -r LOG_PATH
-        LOG_PATH="${LOG_PATH:-$DETECTED_LOG}"
-    else
-        LOG_PATH=""
-    fi
-
-    # --- PAM 配置 ---
-    echo ""
-    prompt "是否配置 PAM (/etc/pam.d/sshd)？[Y/n]"
-    read -r CONFIGURE_PAM
-    CONFIGURE_PAM="${CONFIGURE_PAM:-y}"
-
-    # --- systemd 服务 ---
-    echo ""
-    prompt "是否安装 systemd 服务（开机自启）？[Y/n]"
-    read -r INSTALL_SERVICE
-    INSTALL_SERVICE="${INSTALL_SERVICE:-y}"
-
-    # --- 确认摘要 ---
-    echo ""
-    echo -e "${CYAN}${BOLD}  ─── 安装确认 ───${NC}"
-    echo ""
-    echo -e "  ${BOLD}安装目录：${NC}      $INSTALL_DIR"
-    echo -e "  ${BOLD}运行模式：${NC}      $RUN_MODE"
-    if [[ "$RUN_MODE" == "log" ]]; then
-        echo -e "  ${BOLD}日志文件：${NC}      $LOG_PATH"
-    else
-        echo -e "  ${BOLD}Socket 路径：${NC}   $SOCKET_PATH"
-    fi
-    echo -e "  ${BOLD}Telegram Token：${NC} ${TELEGRAM_TOKEN:0:8}..."
-    echo -e "  ${BOLD}Telegram Chat：${NC}  $TELEGRAM_CHAT_ID"
-    echo -e "  ${BOLD}PAM 配置：${NC}      $([[ "$CONFIGURE_PAM" =~ ^[Yy]$ ]] && echo '是' || echo '否')"
-    echo -e "  ${BOLD}systemd 服务：${NC}   $([[ "$INSTALL_SERVICE" =~ ^[Yy]$ ]] && echo '是' || echo '否')"
-    echo ""
-
-    prompt "确认开始安装？[Y/n]"
-    read -r CONFIRM
-    if [[ ! "${CONFIRM:-y}" =~ ^[Yy]$ ]]; then
-        die "安装已取消。"
-    fi
-}
-
-# -----------------------------------------------------------
-# 写入环境变量文件
-# -----------------------------------------------------------
 write_env() {
     mkdir -p "$(dirname "$ENV_FILE")"
-    cat > "$ENV_FILE" <<EOF
-# SSHHGuard 环境变量 — 由 install.sh 管理
-SSHGUARD_TELEGRAM_TOKEN=$TELEGRAM_TOKEN
-SSHGUARD_TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID
-SSHGUARD_MODE=$RUN_MODE
-SSHGUARD_SOCKET_PATH=$SOCKET_PATH
-EOF
-
-    if [[ -n "${LOG_PATH:-}" ]]; then
-        echo "SSHGUARD_LOG_PATH=$LOG_PATH" >> "$ENV_FILE"
+    if [[ $INSTALLED == true ]]; then
+        if [[ $SOURCE_ENV != "$ENV_FILE" ]]; then
+            install -m 600 "$SOURCE_ENV" "$ENV_FILE"
+        fi
+        set_env_value SSHGUARD_MODE "$RUN_MODE"
+        if [[ $RUN_MODE == log ]]; then
+            set_env_value SSHGUARD_LOG_PATH "$LOG_PATH"
+        else
+            set_env_value SSHGUARD_SOCKET_PATH "$SOCKET_PATH"
+        fi
+    else
+        umask 077
+        {
+            printf 'SSHGUARD_TELEGRAM_TOKEN=%s\n' "$TELEGRAM_TOKEN"
+            printf 'SSHGUARD_TELEGRAM_CHAT_ID=%s\n' "$TELEGRAM_CHAT_ID"
+            printf 'SSHGUARD_MODE=%s\n' "$RUN_MODE"
+            if [[ $RUN_MODE == log ]]; then
+                printf 'SSHGUARD_LOG_PATH=%s\n' "$LOG_PATH"
+            else
+                printf 'SSHGUARD_SOCKET_PATH=%s\n' "$SOCKET_PATH"
+            fi
+        } > "$ENV_FILE"
     fi
-
     chmod 600 "$ENV_FILE"
-    info "环境变量文件已写入 $ENV_FILE"
 }
 
-# -----------------------------------------------------------
-# 安装 systemd 服务
-# -----------------------------------------------------------
-install_service() {
-    if [[ ! "$INSTALL_SERVICE" =~ ^[Yy]$ ]]; then
-        info "已跳过 systemd 服务安装。手动运行方式："
-        echo ""
-        echo "  $INSTALL_DIR/$BINARY_NAME -token <token> -chat-id <id>"
-        return
-    fi
-
-    # 构建 ReadOnlyPaths 列表
-    local EXTRA_PATHS=""
-    if [[ "$RUN_MODE" == "log" && -n "${LOG_PATH:-}" ]]; then
-        EXTRA_PATHS="ReadOnlyPaths=$(dirname "$LOG_PATH")"
-    fi
-
+write_service() {
+    [[ $INSTALL_SERVICE == true ]] || return 0
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=SSHHGuard - SSH 登录监控与 Telegram 通知
+Description=SSHGuard - SSH 登录监控与 Telegram 通知
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 EnvironmentFile=$ENV_FILE
-ExecStart=$INSTALL_DIR/$BINARY_NAME
+ExecStart=$INSTALL_DIR/sshguard
 Restart=always
 RestartSec=30
 StandardOutput=journal
 StandardError=journal
-
-# 安全加固
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=$INSTALL_DIR /var/run
-$EXTRA_PATHS
+ReadWritePaths=/run
 
 [Install]
 WantedBy=multi-user.target
 EOF
+}
 
+start_service() {
+    [[ $INSTALL_SERVICE == true ]] || return 0
     systemctl daemon-reload
-    info "systemd 服务已安装至 $SERVICE_FILE"
-
-    prompt "是否现在启动 SSHHGuard？[Y/n]"
-    read -r START_NOW
-    if [[ "${START_NOW:-y}" =~ ^[Yy]$ ]]; then
-        systemctl enable --now sshguard
-        info "服务已启动并设为开机自启。"
-        echo ""
-        echo "  管理命令："
-        echo "    systemctl status sshguard    # 查看状态"
-        echo "    journalctl -u sshguard -f    # 查看日志"
-    else
-        systemctl enable sshguard
-        info "服务已设为开机自启（将在下次重启后启动）。"
-        echo ""
-        echo "  手动启动：systemctl start sshguard"
+    if [[ $INSTALLED == false ]]; then
+        systemctl enable sshguard >/dev/null
+    fi
+    systemctl restart sshguard || return 1
+    sleep 1
+    systemctl is-active --quiet sshguard || return 1
+    if [[ $RUN_MODE == socket ]]; then
+        [[ -S $SOCKET_PATH ]] || return 1
     fi
 }
 
-# -----------------------------------------------------------
-# 主流程
-# -----------------------------------------------------------
+restore_on_failure() {
+    warn "新服务未能启动，正在恢复旧安装"
+    if [[ -n $BACKUP_DIR ]]; then
+        local path
+        for path in "$INSTALL_DIR/sshguard" "$ENV_FILE" "$SERVICE_FILE" "$PAM_FILE"; do
+            if [[ -f $BACKUP_DIR$path ]]; then
+                if [[ $path == "$INSTALL_DIR/sshguard" ]]; then
+                    local restored
+                    restored=$(mktemp "$INSTALL_DIR/.sshguard.restore.XXXXXX")
+                    cp -p "$BACKUP_DIR$path" "$restored"
+                    mv -f "$restored" "$path"
+                else
+                    cp -p "$BACKUP_DIR$path" "$path"
+                fi
+            elif [[ $path == "$ENV_FILE" ]]; then
+                rm -f -- "$path"
+            fi
+        done
+        systemctl daemon-reload || true
+        systemctl restart sshguard || warn "旧服务也未能重启，请检查 journalctl -u sshguard"
+    fi
+    die "安装失败；备份位于 $BACKUP_DIR"
+}
+
+configure_pam() {
+    [[ $RUN_MODE == socket ]] || return 0
+    cat > "$PAM_HELPER" <<EOF || return 1
+#!/bin/sh
+exec '$INSTALL_DIR/sshguard' -pam -socket '$SOCKET_PATH'
+EOF
+    chmod 755 "$PAM_HELPER" || return 1
+    if ! awk -v helper="$PAM_HELPER" '$0 !~ /^[[:space:]]*#/ && index($0, helper) { found=1 } END { exit !found }' "$PAM_FILE"; then
+        printf 'session optional pam_exec.so type=open_session %s\n' "$PAM_HELPER" >> "$PAM_FILE" || return 1
+    fi
+}
+
 main() {
-    banner
-    require_root
-    check_deps
-
-    echo ""
-    download_binary
-    configure
+    parse_args "$@"
+    trap cleanup_stage EXIT
+    check_platform
+    detect_installation
+    if [[ $UPDATE_ONLY == true && $INSTALLED == false ]]; then
+        die "本机未安装 SSHGuard，无法执行 --update"
+    fi
+    if [[ $INSTALLED == true ]]; then
+        load_existing_config
+    else
+        configure_new
+    fi
+    stage_binary
+    backup_existing
+    install_binary
     write_env
-
-    # PAM 配置
-    if [[ "$CONFIGURE_PAM" =~ ^[Yy]$ ]]; then
-        configure_pam
+    write_service
+    if ! start_service; then
+        restore_on_failure
     fi
-
-    install_service
-
-    echo ""
-    echo -e "${GREEN}${BOLD}  ✓ 安装完成！${NC}"
-    echo ""
-    if [[ "$RUN_MODE" == "socket" && "$CONFIGURE_PAM" =~ ^[Yy]$ ]]; then
-        echo "  提示：新 SSH 登录将自动触发 Telegram 通知。"
-        echo "  无需额外配置 rsyslog 或日志转发。"
+    if ! configure_pam; then
+        restore_on_failure
     fi
-    echo ""
+    info "SSHGuard $RELEASE_VERSION 安装完成，运行模式: $RUN_MODE"
+    if [[ $INSTALL_SERVICE == true ]]; then
+        info "服务状态: $(systemctl is-active sshguard)"
+    else
+        info "未安装 systemd 服务；请手动启动 $INSTALL_DIR/sshguard"
+    fi
 }
 
-main "$@"
+# Sourcing the script is useful for installer migration tests. Piped bash has
+# an empty BASH_SOURCE[0], so it still runs the installer.
+if [[ -z ${BASH_SOURCE[0]} || ${BASH_SOURCE[0]} == "$0" ]]; then
+    main "$@"
+fi

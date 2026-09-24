@@ -38,7 +38,7 @@ func runPAMHelper(socketPath string) {
 		User:       user,
 		SourceIP:   sourceIP,
 		SourcePort: "",
-		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		Timestamp:  time.Now().Format(time.RFC3339),
 		Hostname:   hostname,
 		AuthMethod: "pam",
 	}

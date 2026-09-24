@@ -1,142 +1,60 @@
-# SSHHGuard
+# SSHGuard
 
-实时监控 SSH 认证日志，在每次登录成功时发送 Telegram 通知。
+SSH 登录成功后发送 Telegram 通知。支持 PAM Socket 模式，以及从 `/var/log/auth.log` 或 `/var/log/secure` 读取登录事件的日志模式。v0.0.2 可识别 Debian 13 的 `sshd-session` 日志；同一条成功登录日志重复写入时只通知一次。
 
-## 一键安装
+## 安装与更新
+
+预编译文件支持 Linux amd64。需要 root 权限、systemd、Telegram Bot Token 和 Chat ID。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Flyinsky2004/SSHGuard/main/install.sh | sudo bash
 ```
 
-或者克隆仓库后本地运行：
+安装脚本会检测 `/opt/SSHGuard/sshguard`、systemd 服务以及新旧环境文件。已有安装会自动更新到 v0.0.2，并保留 Telegram 凭据及运行模式；首次安装进入交互式配置。旧版 `/etc/sshguard.env` 会迁移到 `/etc/sshguard/env`。旧版仅支持日志模式，因此迁移时继续使用日志模式，不需要改动 PAM 配置。
+
+只允许更新已有安装时使用：
 
 ```bash
-git clone https://github.com/Flyinsky2004/SSHGuard.git
-cd SSHHGuard
-sudo bash install.sh
+curl -fsSL https://raw.githubusercontent.com/Flyinsky2004/SSHGuard/main/install.sh | sudo bash -s -- --update
 ```
 
-## 安装脚本做了什么
-
-交互式 `install.sh` 会引导你完成以下步骤：
-
-1. **下载** — 从 GitHub Releases 拉取最新的预编译 Linux amd64 二进制文件到 `/opt/SSHGuard/sshguard`
-2. **chmod +x** — 赋予二进制可执行权限
-3. **配置** — 交互式询问：
-   - Telegram Bot Token
-   - Telegram Chat ID
-   - SSH 日志路径（留空则自动检测）
-4. **systemd 服务**（可选）— 创建并启用 `sshguard.service`，实现开机自启和异常自动重启
-
-### 安装过程演示
-
-```
-$ sudo bash install.sh
-
-  ╔══════════════════════════════════╗
-  ║        SSHHGuard 安装程序        ║
-  ╚══════════════════════════════════╝
-
-[+] 检查依赖...
-[+] 依赖检查通过
-
-[+] 正在下载 SSHHGuard 二进制文件...
-[+] 下载地址：https://github.com/Flyinsky2004/SSHGuard/releases/download/main/sshguard
-[+] 二进制文件已安装至 /opt/SSHGuard/sshguard
-
-  ─── 配置参数 ───
-  按 Enter 使用方括号中的默认值。
-
-[?] Telegram Bot Token:
-> 123456:ABC-DEF1234ghijk
-
-[?] Telegram Chat ID:
-> 987654321
-
-  SSH 认证日志路径（留空则自动检测）：
-    检测到：/var/log/auth.log（Debian/Ubuntu）
-
-[?] 日志路径 [/var/log/auth.log]:
-> （直接按 Enter）
-
-[?] 是否安装 systemd 服务（开机自启）？[Y/n]:
-> y
-
-  ─── 安装确认 ───
-
-  安装目录：      /opt/SSHGuard
-  二进制文件：    /opt/SSHGuard/sshguard
-  日志文件：      /var/log/auth.log
-  Telegram Token：123456:...
-  Telegram Chat： 987654321
-  systemd 服务：  是
-
-[?] 确认开始安装？[Y/n]:
-> y
-
-[+] 环境变量文件已写入 /etc/sshguard/env
-[+] systemd 服务已安装至 /etc/systemd/system/sshguard.service
-[?] 是否现在启动 SSHHGuard？[Y/n]:
-> y
-[+] 服务已启动并设为开机自启。
-
-  ✓ 安装完成！
-```
-
-## 前置条件
-
-- **Linux amd64**（预编译二进制仅支持该平台）
-- **root / sudo** 权限
-- `curl`（安装脚本会自动检测并提供安装）
-- **Telegram Bot Token** — 通过 [@BotFather](https://t.me/BotFather) 创建 Bot 获取
-- **Telegram Chat ID** — 向你的 Bot 发送 `/start`，然后访问 `https://api.telegram.org/bot<TOKEN>/getUpdates`，在返回的 JSON 中找到 `"chat":{"id": ...}`
-
-## 手动运行
-
-直接运行二进制文件：
+发布前或离线安装可使用本地二进制文件：
 
 ```bash
-/opt/SSHGuard/sshguard -token <bot_token> -chat-id <chat_id> [-log <日志路径>]
+sudo bash install.sh --update --binary /path/to/sshguard
 ```
 
-或使用环境变量：
+安装脚本从 `v0.0.2` release 下载 `sshguard` 和 `checksums.txt`，校验 SHA-256 和二进制版本之后才替换程序。更新时会备份已有二进制、配置和服务单元；服务启动失败时尝试恢复。**只有发布实际标签 `v0.0.2` 并上传这两个资产后，远程下载才可用。**将 release 标题改为 v0.0.2 而继续使用旧标签 `main` 不会生成脚本所用的下载地址。
+
+## 运行模式
+
+| 模式 | 用途 | 安装要求 |
+| --- | --- | --- |
+| `socket` | 新安装默认模式，PAM 在 SSH 会话开启时发送事件 | `/etc/pam.d/sshd` 中的 `pam_exec.so` helper；脚本自动配置 |
+| `log` | 兼容旧安装，保留认证方式、来源 IP 和端口 | 服务器持续写入 `/var/log/auth.log` 或 `/var/log/secure` |
+
+Socket 模式通知中的认证方式为 `pam`，不包含 SSH 来源端口。日志模式支持旧版 `sshd[PID]` 和 Debian 13 的 `sshd-session[PID]` 成功登录行。日志监控只处理程序启动后新写入的内容。
+
+配置文件为 `/etc/sshguard/env`；升级后的服务单元会使用此路径。可通过环境变量或命令行参数设置 `SSHGUARD_MODE`、`SSHGUARD_LOG_PATH`、`SSHGUARD_SOCKET_PATH` 和 `SSHGUARD_ALIAS`。凭据变量为 `SSHGUARD_TELEGRAM_TOKEN` 和 `SSHGUARD_TELEGRAM_CHAT_ID`。
 
 ```bash
-export SSHGUARD_TELEGRAM_TOKEN=你的_token
-export SSHGUARD_TELEGRAM_CHAT_ID=你的_chat_id
-export SSHGUARD_LOG_PATH=/var/log/auth.log   # 可选
-
-/opt/SSHGuard/sshguard
+/opt/SSHGuard/sshguard -version
+systemctl status sshguard
+journalctl -u sshguard -f
 ```
 
-## 配置参考
+## 构建和发布 v0.0.2
 
-| 参数 | 环境变量 | 必填 | 默认值 |
-|------|---------|------|--------|
-| `-token` | `SSHGUARD_TELEGRAM_TOKEN` | 是 | — |
-| `-chat-id` | `SSHGUARD_TELEGRAM_CHAT_ID` | 是 | — |
-| `-log` | `SSHGUARD_LOG_PATH` | 否 | 自动检测 |
-
-日志路径会自动在 `/var/log/auth.log`（Debian/Ubuntu）和 `/var/log/secure`（RHEL/CentOS）之间检测。
-
-## 服务管理
+使用 Go 1.25.5 构建 Linux amd64 静态文件：
 
 ```bash
-systemctl status sshguard     # 查看运行状态
-systemctl stop sshguard       # 停止服务
-systemctl start sshguard      # 启动服务
-systemctl restart sshguard    # 重启服务
-
-journalctl -u sshguard -f     # 实时查看日志
+mkdir -p dist/v0.0.2
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false \
+  -ldflags='-s -w -X main.version=v0.0.2' -o dist/v0.0.2/sshguard .
+(cd dist/v0.0.2 && sha256sum sshguard > checksums.txt)
 ```
 
-## 从源码构建
-
-```bash
-git clone https://github.com/Flyinsky2004/SSHGuard.git
-cd SSHHGuard
-go build -ldflags="-s -w" -o sshguard .
-```
+将 `dist/v0.0.2/sshguard` 和 `dist/v0.0.2/checksums.txt` 作为 **`v0.0.2` 标签**的 release 资产发布。仓库现有 GitHub Actions 在推送 `v*` 标签时也会构建并附加同名资产；手动上传时请让校验和与所上传二进制来自同一次构建。
 
 ## 开源协议
 

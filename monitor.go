@@ -10,11 +10,11 @@ import (
 	"github.com/nxadm/tail"
 )
 
-// sshAcceptedRe matches "Accepted" lines from both syslog and systemd-journald formats.
+// sshAcceptedRe matches "Accepted" lines from syslog and ISO 8601 auth logs.
 // Syslog:    Jan 22 10:15:30 myhost sshd[12345]: Accepted password for root from 1.2.3.4 port 12345
-// Journald:  2026-04-27T14:26:38.670099+08:00 localhost sshd[277030]: Accepted publickey for root from 1.2.3.4 port 34102 ssh2: ED25519 SHA256:...
+// Debian 13: 2026-09-25T02:48:45.511991+08:00 localhost sshd-session[14193]: Accepted publickey for root from 1.2.3.4 port 34102 ssh2: ED25519 SHA256:...
 var sshAcceptedRe = regexp.MustCompile(
-	`^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\S*)\s+(\S+)\s+sshd\[\d+\]:\s+Accepted\s+(\S+)\s+for\s+(\S+)\s+from\s+(\S+)\s+port\s+(\d+)`,
+	`^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\S*)\s+(\S+)\s+sshd(?:-session)?\[\d+\]:\s+Accepted\s+(\S+)\s+for\s+(\S+)\s+from\s+(\S+)\s+port\s+(\d+)`,
 )
 
 var syslogTsRe = regexp.MustCompile(`^[A-Z][a-z]{2}\s`)
@@ -36,12 +36,13 @@ func monitorLog(logPath string, events chan<- *SSHEvent) error {
 	}
 
 	go func() {
+		var previousAccepted string
 		for line := range t.Lines {
 			if line.Err != nil {
 				log.Printf("日志读取错误: %v", line.Err)
 				continue
 			}
-			ev := parseLine(line.Text)
+			ev := parseUniqueLogin(line.Text, &previousAccepted)
 			if ev != nil {
 				events <- ev
 			}
@@ -51,6 +52,18 @@ func monitorLog(logPath string, events chan<- *SSHEvent) error {
 
 	log.Printf("正在监控 SSH 日志: %s", logPath)
 	return nil
+}
+
+// Some syslog configurations write each auth event twice. An identical
+// Accepted line has the same timestamp, PID, user and source port, so it
+// describes the same login even when other messages appear between copies.
+func parseUniqueLogin(line string, previousAccepted *string) *SSHEvent {
+	ev := parseLine(line)
+	if ev == nil || line == *previousAccepted {
+		return nil
+	}
+	*previousAccepted = line
+	return ev
 }
 
 func parseLine(line string) *SSHEvent {
@@ -75,13 +88,16 @@ func parseLine(line string) *SSHEvent {
 
 // parseTimestamp parses both syslog and ISO 8601 timestamps.
 func parseTimestamp(s string) (time.Time, error) {
-	// syslog: "Jan 2 15:04:05"
+	// syslog: "Jan  2 15:04:05" or "Jan 22 15:04:05"
 	if syslogTsRe.MatchString(s) {
-		t, err := time.Parse("Jan 2 15:04:05", s)
+		now := time.Now()
+		t, err := time.ParseInLocation("2006 Jan _2 15:04:05", fmt.Sprintf("%d %s", now.Year(), s), time.Local)
 		if err != nil {
 			return time.Time{}, err
 		}
-		t = t.AddDate(time.Now().Year(), 0, 0)
+		if t.After(now.Add(24 * time.Hour)) {
+			t = t.AddDate(-1, 0, 0)
+		}
 		return t, nil
 	}
 	// ISO 8601: "2026-04-27T14:26:38.670099+08:00"

@@ -8,13 +8,14 @@ import (
 
 // Config holds all configuration for SSHGuard.
 type Config struct {
-	LogPath    string
-	Token      string
-	ChatID     string
-	Alias      string
-	Mode       string
-	SocketPath string
-	PAMMode    bool
+	LogPath     string
+	Token       string
+	ChatID      string
+	Alias       string
+	Mode        string
+	SocketPath  string
+	PAMMode     bool
+	ShowVersion bool
 }
 
 func parseFlags() *Config {
@@ -25,9 +26,13 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.LogPath, "log", "", "SSH 日志路径 (留空则自动检测; 环境变量: SSHGUARD_LOG_PATH)")
 	flag.StringVar(&cfg.Alias, "alias", os.Getenv("SSHGUARD_ALIAS"), "服务器别名 (环境变量: SSHGUARD_ALIAS)")
 	flag.StringVar(&cfg.Mode, "mode", stringEnv("SSHGUARD_MODE", "socket"), "运行模式: socket 或 log (默认: socket)")
-	flag.StringVar(&cfg.SocketPath, "socket", stringEnv("SSHGUARD_SOCKET_PATH", "/var/run/sshguard.sock"), "Unix Socket 路径 (环境变量: SSHGUARD_SOCKET_PATH)")
+	flag.StringVar(&cfg.SocketPath, "socket", stringEnv("SSHGUARD_SOCKET_PATH", "/run/sshguard.sock"), "Unix Socket 路径 (环境变量: SSHGUARD_SOCKET_PATH)")
 	flag.BoolVar(&cfg.PAMMode, "pam", false, "PAM Helper 模式 (由 pam_exec.so 调用)")
+	flag.BoolVar(&cfg.ShowVersion, "version", false, "显示版本号")
 	flag.Parse()
+	if cfg.ShowVersion {
+		return cfg
+	}
 
 	if cfg.LogPath == "" {
 		if v := os.Getenv("SSHGUARD_LOG_PATH"); v != "" {
