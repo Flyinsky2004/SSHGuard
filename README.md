@@ -10,7 +10,7 @@ SSH 登录成功后发送 Telegram 通知。支持 PAM Socket 模式，以及从
 curl -fsSL https://raw.githubusercontent.com/Flyinsky2004/SSHGuard/main/install.sh | sudo bash
 ```
 
-安装脚本会检测 `/opt/SSHGuard/sshguard`、systemd 服务以及新旧环境文件。已有安装会自动更新到 v0.0.2，并保留 Telegram 凭据及运行模式；首次安装进入交互式配置。旧版 `/etc/sshguard.env` 会迁移到 `/etc/sshguard/env`。旧版仅支持日志模式，因此迁移时继续使用日志模式，不需要改动 PAM 配置。
+安装脚本会检测 `/opt/SSHGuard/sshguard`、systemd 服务以及新旧环境文件。已有安装会自动更新到 v0.0.2，并保留 Telegram 凭据及运行模式；旧配置中的 `SSHGUARD_TOKEN`、`SSHGUARD_CHAT_ID` 和 `SSHGUARD_LOG` 会转换为新版变量，`SSHGUARD_ALIAS` 会保留。如果旧配置确实缺少凭据，更新时会在终端提示补录。首次安装进入交互式配置。旧版 `/etc/sshguard.env` 会迁移到 `/etc/sshguard/env`。旧版仅支持日志模式，因此迁移时继续使用日志模式，不需要改动 PAM 配置。
 
 只允许更新已有安装时使用：
 

@@ -30,7 +30,7 @@ usage() {
 用法: sudo bash install.sh [--update] [--binary /path/to/sshguard]
 
 默认检测旧安装并升级；未安装时进入交互式安装。
---update 仅更新已有安装，保留 Telegram 配置和原有运行模式。
+--update 仅更新已有安装，保留 Telegram 配置和原有运行模式；缺失凭据时从终端补录。
 --binary 使用本地 v0.0.2 二进制文件，供发布前或离线安装使用。
 EOF
 }
@@ -62,7 +62,38 @@ check_platform() {
 
 read_env_value() {
     local key="$1" file="$2"
-    awk -v key="$key" 'index($0, key "=") == 1 { value = substr($0, length(key) + 2) } END { print value }' "$file"
+    awk -v key="$key" '
+        {
+            line = $0
+            sub(/^[[:space:]]*/, "", line)
+            sub(/^export[[:space:]]+/, "", line)
+            if (match(line, "^" key "[[:space:]]*=")) {
+                value = substr(line, RLENGTH + 1)
+                sub(/^[[:space:]]*/, "", value)
+                sub(/[[:space:]]*$/, "", value)
+            }
+        }
+        END { print value }
+    ' "$file"
+}
+
+credential_missing() {
+    [[ -z $1 || $1 == '""' || $1 == "''" ]]
+}
+
+prompt_missing_credential() {
+    local key="$1" label="$2" variable="$3"
+    warn "$SOURCE_ENV 中没有可用的 $key；请输入 $label 以继续更新"
+    printf '%s: ' "$label" >&2
+    if [[ $variable == TELEGRAM_TOKEN ]]; then
+        IFS= read -r -s "$variable" </dev/tty || die "无法从终端读取 $label"
+        printf '\n' >&2
+    else
+        IFS= read -r "$variable" </dev/tty || die "无法从终端读取 $label"
+    fi
+    if credential_missing "${!variable}"; then
+        die "$label 不能为空"
+    fi
 }
 
 detect_installation() {
@@ -88,13 +119,39 @@ detect_log_path() {
 
 load_existing_config() {
     [[ -n $SOURCE_ENV ]] || die "发现旧安装，但未找到 $ENV_FILE 或 $LEGACY_ENV_FILE；无法安全迁移 Telegram 配置"
-    [[ -n $(read_env_value SSHGUARD_TELEGRAM_TOKEN "$SOURCE_ENV") ]] || die "$SOURCE_ENV 缺少 SSHGUARD_TELEGRAM_TOKEN"
-    [[ -n $(read_env_value SSHGUARD_TELEGRAM_CHAT_ID "$SOURCE_ENV") ]] || die "$SOURCE_ENV 缺少 SSHGUARD_TELEGRAM_CHAT_ID"
+    TELEGRAM_TOKEN=$(read_env_value SSHGUARD_TELEGRAM_TOKEN "$SOURCE_ENV")
+    TELEGRAM_CHAT_ID=$(read_env_value SSHGUARD_TELEGRAM_CHAT_ID "$SOURCE_ENV")
+    if credential_missing "$TELEGRAM_TOKEN"; then
+        TELEGRAM_TOKEN=$(read_env_value SSHGUARD_TOKEN "$SOURCE_ENV")
+    fi
+    if credential_missing "$TELEGRAM_CHAT_ID"; then
+        TELEGRAM_CHAT_ID=$(read_env_value SSHGUARD_CHAT_ID "$SOURCE_ENV")
+    fi
+    if [[ $SOURCE_ENV != "$LEGACY_ENV_FILE" && -f $LEGACY_ENV_FILE ]]; then
+        if credential_missing "$TELEGRAM_TOKEN"; then
+            TELEGRAM_TOKEN=$(read_env_value SSHGUARD_TELEGRAM_TOKEN "$LEGACY_ENV_FILE")
+            if credential_missing "$TELEGRAM_TOKEN"; then
+                TELEGRAM_TOKEN=$(read_env_value SSHGUARD_TOKEN "$LEGACY_ENV_FILE")
+            fi
+        fi
+        if credential_missing "$TELEGRAM_CHAT_ID"; then
+            TELEGRAM_CHAT_ID=$(read_env_value SSHGUARD_TELEGRAM_CHAT_ID "$LEGACY_ENV_FILE")
+            if credential_missing "$TELEGRAM_CHAT_ID"; then
+                TELEGRAM_CHAT_ID=$(read_env_value SSHGUARD_CHAT_ID "$LEGACY_ENV_FILE")
+            fi
+        fi
+    fi
+    if credential_missing "$TELEGRAM_TOKEN"; then
+        prompt_missing_credential SSHGUARD_TELEGRAM_TOKEN 'Telegram Bot Token' TELEGRAM_TOKEN
+    fi
+    if credential_missing "$TELEGRAM_CHAT_ID"; then
+        prompt_missing_credential SSHGUARD_TELEGRAM_CHAT_ID 'Telegram Chat ID' TELEGRAM_CHAT_ID
+    fi
 
     RUN_MODE=$(read_env_value SSHGUARD_MODE "$SOURCE_ENV")
     if [[ -z $RUN_MODE ]]; then
         # The legacy release had only log monitoring. Preserve that behavior.
-        if [[ $SOURCE_ENV == "$LEGACY_ENV_FILE" || -n $(read_env_value SSHGUARD_LOG_PATH "$SOURCE_ENV") ]]; then
+        if [[ $SOURCE_ENV == "$LEGACY_ENV_FILE" || -n $(read_env_value SSHGUARD_LOG_PATH "$SOURCE_ENV") || -n $(read_env_value SSHGUARD_LOG "$SOURCE_ENV") ]]; then
             RUN_MODE=log
         else
             RUN_MODE=socket
@@ -103,6 +160,9 @@ load_existing_config() {
     [[ $RUN_MODE == log || $RUN_MODE == socket ]] || die "旧配置中的 SSHGUARD_MODE 无效: $RUN_MODE"
 
     LOG_PATH=$(read_env_value SSHGUARD_LOG_PATH "$SOURCE_ENV")
+    if [[ -z $LOG_PATH ]]; then
+        LOG_PATH=$(read_env_value SSHGUARD_LOG "$SOURCE_ENV")
+    fi
     if [[ $RUN_MODE == log ]]; then
         LOG_PATH=${LOG_PATH:-$(detect_log_path)}
         [[ -f $LOG_PATH ]] || die "SSH 日志文件不存在: $LOG_PATH"
@@ -202,7 +262,14 @@ install_binary() {
 set_env_value() {
     local key="$1" value="$2" staged
     staged=$(mktemp "$ENV_FILE.XXXXXX")
-    awk -v key="$key" 'index($0, key "=") != 1 { print }' "$ENV_FILE" > "$staged"
+    awk -v key="$key" '
+        {
+            line = $0
+            sub(/^[[:space:]]*/, "", line)
+            sub(/^export[[:space:]]+/, "", line)
+            if (line !~ "^" key "[[:space:]]*=") print
+        }
+    ' "$ENV_FILE" > "$staged"
     printf '%s=%s\n' "$key" "$value" >> "$staged"
     chmod 600 "$staged"
     mv -f "$staged" "$ENV_FILE"
@@ -214,6 +281,8 @@ write_env() {
         if [[ $SOURCE_ENV != "$ENV_FILE" ]]; then
             install -m 600 "$SOURCE_ENV" "$ENV_FILE"
         fi
+        set_env_value SSHGUARD_TELEGRAM_TOKEN "$TELEGRAM_TOKEN"
+        set_env_value SSHGUARD_TELEGRAM_CHAT_ID "$TELEGRAM_CHAT_ID"
         set_env_value SSHGUARD_MODE "$RUN_MODE"
         if [[ $RUN_MODE == log ]]; then
             set_env_value SSHGUARD_LOG_PATH "$LOG_PATH"
